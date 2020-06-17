@@ -12,11 +12,19 @@ import (
 )
 
 type Upgit struct {
-	RepoPath          string
-	IsRepo            bool
-	MatchesRemoteHead string
-	Dirty             bool
-	UpdateErr         error
+	Result UpgitResult
+	Path   string
+	Report string
+}
+
+func mkUpgit(repoPath string) func(UpgitResult, string) Upgit {
+	return func(result UpgitResult, report string) Upgit {
+		return Upgit{
+			Path:   repoPath,
+			Result: result,
+			Report: report,
+		}
+	}
 }
 
 func QuitOnErr(err error, extra_messages ...string) {
@@ -28,49 +36,98 @@ func QuitOnErr(err error, extra_messages ...string) {
 	}
 }
 
-func pullRepo(repoStrPath string, ch chan<- Upgit) {
-	fmt.Println(repoStrPath)
-	upgit := Upgit{
-		RepoPath:          repoStrPath,
-		IsRepo:            true,
-		MatchesRemoteHead: "",
-		Dirty:             false,
-		UpdateErr:         nil,
-	}
+type UpgitResult int
 
-	r, err := git.PlainOpen(repoStrPath)
+const (
+	NotARepo UpgitResult = iota
+	NoRemotes
+	Dirty
+	RemoteHeadMismatch
+	UpToDate
+	Updated
+	NoClearOrigin
+	BareRepository
+	Other // For unconsidered errors.
+)
+
+func pullRepo(repoStrPath string, ch chan<- Upgit) {
+	toUpgit := mkUpgit(repoStrPath)
+
+	repo, err := git.PlainOpen(repoStrPath)
 	if err == git.ErrRepositoryNotExists {
-		upgit.IsRepo = false
-		ch <- upgit
+		ch <- toUpgit(NotARepo, "")
 		return
 	} else {
 		QuitOnErr(err)
 	}
-	w, err := r.Worktree()
-	QuitOnErr(err, "worktree err")
-	// TODO: when no remote exists, its not erroring.
-	// How to check that remote exists?
-	// How to handle if it does not exist?
-	pullErr := w.Pull(&git.PullOptions{RemoteName: "origin"})
-	if pullErr == git.NoErrAlreadyUpToDate {
+
+	remotes, err := repo.Remotes()
+
+	QuitOnErr(err)
+
+	originName := "origin"
+
+	if numRemotes := len(remotes); numRemotes == 0 {
+		ch <- toUpgit(NoRemotes, "")
+	} else if numRemotes > 1 {
+		_, err := repo.Remote("origin")
+		if err != nil {
+			// TODO: string method is of the form
+			// "origin      https://github.com/neallred/rivendell.git (fetch)"
+			// so need to parse out the origin names.
+			ch <- toUpgit(NoClearOrigin, "")
+			return
+		}
+	} else {
+		originName = remotes[0].String()
+		fmt.Println("hopefully this is a remote name ...", originName)
 	}
-	QuitOnErr(err, "pull err")
-	ref, err := r.Head()
-	QuitOnErr(err, "Head err")
-	_, err = r.CommitObject(ref.Hash())
-	QuitOnErr(err, "commit err")
+
+	w, err := repo.Worktree()
+	if err == git.ErrIsBareRepository {
+		ch <- toUpgit(BareRepository, "")
+		return
+	} else {
+		QuitOnErr(err, "worktree err")
+	}
 
 	status, err := w.Status()
 	QuitOnErr(err, "status err")
 	isClean := status.IsClean()
 	if !isClean {
 		fmt.Println("repo is dirty:", repoStrPath)
-		upgit.Dirty = true
+
+		submodules, err := w.Submodules()
+		QuitOnErr(err)
+		for _, s := range submodules {
+			fmt.Println("submodule: ", s)
+		}
+
+		changedFileReport := ""
+		upgit := toUpgit(Dirty, changedFileReport)
+
 		ch <- upgit
 		return
 	}
 
-	ch <- upgit
+	pullErr := w.Pull(&git.PullOptions{RemoteName: originName})
+	if pullErr == git.NoErrAlreadyUpToDate {
+		ch <- toUpgit(UpToDate, "")
+		return
+	} else if pullErr == nil {
+		// TODO: report of what files changed here
+		ch <- toUpgit(Updated, "TODO: report of what files changed here")
+		return
+	} else {
+		QuitOnErr(err, "pull err")
+	}
+
+	ref, err := repo.Head()
+	QuitOnErr(err, "Head err")
+	_, err = repo.CommitObject(ref.Hash())
+	QuitOnErr(err, "commit err")
+
+	ch <- toUpgit(Other, "dunno what happened, this state should be unreachable")
 	return
 }
 
@@ -84,6 +141,49 @@ func min(x, y int) int {
 // don't update too many repos at once, don't want to exceed open file limit
 const MAX_CONCURRENT_UPGITS = 20
 
+func listPath(upgit Upgit) {
+	fmt.Printf("  %s\n", upgit.Path)
+}
+
+func printUpgits(upgits map[UpgitResult][]Upgit) {
+	// TODO: Still need to handle: Dirty, RemoteHeadMismatch, Updated,
+
+	if numRepos := len(upgits[NotARepo]); numRepos > 0 {
+		fmt.Printf("Not a repo (%d):\n", numRepos)
+		for _, upgit := range upgits[NotARepo] {
+			listPath(upgit)
+		}
+	}
+
+	if numRepos := len(upgits[UpToDate]); numRepos > 0 {
+		fmt.Printf("%d up to date repos\n", numRepos)
+	}
+
+	if numRepos := len(upgits[NoRemotes]); numRepos > 0 {
+		fmt.Printf("%d local-only repos with nothing to upgit\n", numRepos)
+	}
+
+	if numRepos := len(upgits[BareRepository]); numRepos > 0 {
+		fmt.Printf("%d bare repos that do not have work trees\n", numRepos)
+	}
+
+	if numRepos := len(upgits[NoClearOrigin]); numRepos > 0 {
+		fmt.Printf("Multiple remotes, but no \"origin\". Unable to upgit %d repos:\n", numRepos)
+
+		for _, upgit := range upgits[NoClearOrigin] {
+			listPath(upgit)
+		}
+	}
+
+	if numRepos := len(upgits[Other]); numRepos > 0 {
+		fmt.Printf("Repos with unknown outcome (%d) (This should never happen and is probably a logic bug in Upgit!):\n", numRepos)
+		for _, upgit := range upgits[Other] {
+			fmt.Printf("  %s\n", upgit.Path)
+		}
+	}
+
+}
+
 func main() {
 	flag.Parse()
 	repoContainers := os.Args[1:]
@@ -92,7 +192,6 @@ func main() {
 		// and prompting user for container paths
 		log.Fatal("Please pass paths to project containers as arguments")
 	}
-	fmt.Println("project_containers", repoContainers)
 	repoPaths := []string{}
 	for _, repoContainer := range repoContainers {
 		files, err := ioutil.ReadDir(repoContainer)
@@ -116,11 +215,12 @@ func main() {
 		go pullRepo(repoPath, chUpgit)
 	}
 
-	results := []Upgit{}
+	upgits := map[UpgitResult][]Upgit{}
 	for i := 0; i < lenRepoPaths; i++ {
 		upgit := <-chUpgit
-		results = append(results, upgit)
+		upgits[upgit.Result] = append(upgits[upgit.Result], upgit)
 		bar.Increment()
 	}
 	bar.Finish()
+	printUpgits(upgits)
 }
