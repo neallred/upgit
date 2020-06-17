@@ -57,12 +57,12 @@ popd
 
 # Change a legitimate repo
 git clone https://github.com/neallred/upgit.git $upgit_dir/test-repo-container/upgit-changed > /dev/null 2> /dev/null
-# only truncate if repo creation successful. Otherwise, will be truncating the repo's readme
+# only change if repo created successfully. Otherwise, will be modifying upgit
 pushd $upgit_dir/test-repo-container/upgit-changed && truncate -s 0 README.md
 popd
 
 # Unshared branch on legitimate repo
 git clone https://github.com/neallred/upgit.git $upgit_dir/test-repo-container/upgit-unshared-branch > /dev/null 2> /dev/null
-pushd $upgit_dir/test-repo-container/upgit-unshared-branch
-git checkout -b unshared-branch-testing-upgit > /dev/null
+# only change if repo created successfully. Otherwise, will be modifying upgit
+pushd $upgit_dir/test-repo-container/upgit-unshared-branch && git checkout -b unshared-branch-testing-upgit > /dev/null 2> /dev/null
 popd
