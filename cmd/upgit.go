@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"regexp"
 
 	"github.com/cheggaaa/pb/v3"
 	"github.com/go-git/go-git/v5"
@@ -79,8 +80,18 @@ func pullRepo(repoStrPath string, ch chan<- Upgit) {
 			return
 		}
 	} else {
-		originName = remotes[0].String()
-		fmt.Println("hopefully this is a remote name ...", originName)
+		_, err := repo.Remote("origin")
+		if err != nil {
+			re := regexp.MustCompile(`^[A-Za-z0-9_-]+`)
+			originNameBytes := re.Find([]byte(remotes[0].String()))
+			if originNameBytes == nil {
+				ch <- toUpgit(NoClearOrigin, "")
+				return
+			} else {
+				originName := string(originNameBytes)
+				fmt.Println("hopefully this is a remote name ...", originName)
+			}
+		}
 	}
 
 	w, err := repo.Worktree()
@@ -123,9 +134,14 @@ func pullRepo(repoStrPath string, ch chan<- Upgit) {
 	}
 
 	ref, err := repo.Head()
-	QuitOnErr(err, "Head err")
-	_, err = repo.CommitObject(ref.Hash())
-	QuitOnErr(err, "commit err")
+	if err != nil {
+		fmt.Println(err, "Head err", repoStrPath)
+	} else {
+		_, err = repo.CommitObject(ref.Hash())
+		if err != nil {
+			fmt.Println("commit err", repoStrPath)
+		}
+	}
 
 	ch <- toUpgit(Other, "dunno what happened, this state should be unreachable")
 	return
@@ -176,7 +192,7 @@ func printUpgits(upgits map[UpgitResult][]Upgit) {
 	}
 
 	if numRepos := len(upgits[Other]); numRepos > 0 {
-		fmt.Printf("Repos with unknown outcome (%d) (This should never happen and is probably a logic bug in Upgit!):\n", numRepos)
+		fmt.Printf("Repos with unknown outcome (%d) (This should never happen and is probably a logic error in upgit!):\n", numRepos)
 		for _, upgit := range upgits[Other] {
 			fmt.Printf("  %s\n", upgit.Path)
 		}

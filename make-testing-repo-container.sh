@@ -23,6 +23,9 @@ mkdir -p $upgit_dir/test-repo-container/plain-dir
 mkdir -p $upgit_dir/test-repo-container/local-repo
 pushd $upgit_dir/test-repo-container/local-repo
 git init > /dev/null
+echo '' > dummy-file
+git add dummy-file
+git commit -m 'Initial commit' > /dev/null
 popd
 
 # Make an empty repo
@@ -60,6 +63,9 @@ git clone https://github.com/neallred/upgit.git $upgit_dir/test-repo-container/u
 # only change if repo created successfully. Otherwise, will be modifying upgit
 pushd $upgit_dir/test-repo-container/upgit-changed && truncate -s 0 README.md
 popd
+
+# Legitimate, bare repo
+git clone --bare https://github.com/neallred/upgit.git $upgit_dir/test-repo-container/upgit-bare > /dev/null 2> /dev/null
 
 # Unshared branch on legitimate repo
 git clone https://github.com/neallred/upgit.git $upgit_dir/test-repo-container/upgit-unshared-branch > /dev/null 2> /dev/null
