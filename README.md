@@ -24,12 +24,40 @@ Move upgit executable to somewhere on your `$PATH`.
 
 ## Testing
 
-From the repo root, invoke
+### Unit
+
+TBD
+
+### Integration
+
+From the repo root, run
 
 ```
-./make-testing-repo-container.sh
+go build -o test/common cmd/upgit.go
+./test/common/make-git-folder.sh
+./test/common/upgit ./test/common/git-folder
 ```
 
-This will create a skeleton directory with several repositories to facilitate testing. `make-testing-repo-container` takes a `--recreate` option that will remove the skeleton directory completely and start it over from scratch. Some of the repos created depend on network access.
+`make-git-folder.sh` create several repos as test/common/git-folder. It accepts a `--recreate` option that will remove the skeleton directory completely and start it over from scratch. Some of the repos created depend on network access.
 
-Automated tests are still TODO, but you can manually run `./make-testing-repo-container.sh --recreate && go run cmd/upgit.go ./test-repo-container` and check if the output matches expectations.
+Automated assertions are still TODO, but you can manually check if STDOUT matches expectations.
+
+### End to end
+From the repo root, run
+
+```
+GOOS=linux go build -o test/common/upgit-linux cmd/upgit.go
+docker build -t upgit-test-pull-image -f ./test/e2e/test-pull.Dockerfile ./test/e2e
+docker build -t upgit-git-server -f ./test/e2e/git-server.Dockerfile ./test/e2e
+cd test/e2e
+docker-compose up --build --force-recreate
+```
+
+The end to end tests use docker-compose to build a common, reused git server, and various git clients. Each git client is an end to end test.
+
+Pulling and reporting updates to one repo. The git client test script:
+  * makes a repo
+  * pushes it to the git server
+  * clones it to another folder
+  * updates the original repo and the git server origin repo
+  * runs upgit, checking that the clone is updated

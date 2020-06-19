@@ -1,0 +1,30 @@
+version: "3"
+
+services:
+  git_server:
+    build:
+      context: .
+      dockerfile: ./git-server.Dockerfile
+    image: upgit-git-server
+    expose:
+      - "22"
+    ports: 
+      - "2222:22"
+    container_name: git_server
+    networks:
+      - upgit
+  git_client:
+    build:
+      context: .
+      dockerfile: ./test-pull.Dockerfile
+    image: upgit-test-pull-image
+    container_name: upgit-test-pull
+    volumes:
+      - "../common/upgit-linux:/bin/upgit"
+    depends_on:
+      - git_server
+    networks:
+      - upgit
+
+networks:
+  upgit:
