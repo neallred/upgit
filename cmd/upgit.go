@@ -130,21 +130,13 @@ func pullRepo(repoStrPath string, ch chan<- Upgit) {
 		ch <- toUpgit(Updated, "TODO: report of what files changed here")
 		return
 	} else {
-		QuitOnErr(err, "pull err")
+		fmt.Println(pullErr, repoStrPath+": pull err")
+		ch <- toUpgit(Other, fmt.Sprintf("%s", pullErr))
+		return
 	}
 
-	ref, err := repo.Head()
-	if err != nil {
-		fmt.Println(err, "Head err", repoStrPath)
-	} else {
-		_, err = repo.CommitObject(ref.Hash())
-		if err != nil {
-			fmt.Println("commit err", repoStrPath)
-		}
-	}
-
-	ch <- toUpgit(Other, "dunno what happened, this state should be unreachable")
-	return
+	// ch <- toUpgit(Other, "dunno what happened, this state should be unreachable")
+	// return
 }
 
 func min(x, y int) int {
@@ -194,7 +186,7 @@ func printUpgits(upgits map[UpgitResult][]Upgit) {
 	if numRepos := len(upgits[Other]); numRepos > 0 {
 		fmt.Printf("Repos with unknown outcome (%d) (This should never happen and is probably a logic error in upgit!):\n", numRepos)
 		for _, upgit := range upgits[Other] {
-			fmt.Printf("  %s\n", upgit.Path)
+			fmt.Printf("  %s\n: %s", upgit.Path, upgit.Report)
 		}
 	}
 
@@ -238,5 +230,6 @@ func main() {
 		bar.Increment()
 	}
 	bar.Finish()
+	fmt.Println()
 	printUpgits(upgits)
 }

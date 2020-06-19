@@ -6,6 +6,11 @@ loop_sleep() {
   loop_sleep
 }
 
+ssh-agent
+[ -z "$SSH_AUTH_SOCK" ] && SSH_AUTH_SOCK=$(ls -l /tmp/ssh-*/agent.* 2> /dev/null | grep $(whoami) | awk '{print $9}')
+export SSH_AUTH_SOCK=$SSH_AUTH_SOCK
+ssh-add /root/.ssh/id_rsa
+
 git config --global user.email "upgit@git_client.com"
 git config --global user.name "upgit"
 
