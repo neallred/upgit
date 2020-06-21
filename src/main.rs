@@ -7,43 +7,44 @@ use std::env;
 fn do_fetch<'a>(
     repo: &'a git2::Repository,
     refs: &[&str],
-    remote: &'a mut git2::Remote
+    remote: &'a mut git2::Remote,
+    repo_path: &String,
 ) -> Result<git2::AnnotatedCommit<'a>, git2::Error> {
-    let mut cb = git2::RemoteCallbacks::new();
+    // let mut cb = git2::RemoteCallbacks::new();
 
     // Print out our transfer progress
-    cb.transfer_progress(|stats| {
-        if stats.received_objects() == stats.total_objects() {
-            print!(
-                "Resolving deltas{}/{}\r",
-                stats.indexed_deltas(),
-                stats.total_deltas()
-            );
-        } else if stats.total_objects() > 0 {
-            print!(
-                "Received {}/{} objects ({}) in {} bytes\r",
-                stats.received_objects(),
-                stats.total_objects(),
-                stats.indexed_objects(),
-                stats.received_bytes(),
-            );
-        }
-        io::stdout().flush().unwrap();
-        true
-    });
+    // cb.transfer_progress(|stats| {
+    //     if stats.received_objects() == stats.total_objects() {
+    //         print!(
+    //             "Resolving deltas{}/{}\r",
+    //             stats.indexed_deltas(),
+    //             stats.total_deltas()
+    //         );
+    //     } else if stats.total_objects() > 0 {
+    //         print!(
+    //             "Received {}/{} objects ({}) in {} bytes\r",
+    //             stats.received_objects(),
+    //             stats.total_objects(),
+    //             stats.indexed_objects(),
+    //             stats.received_bytes(),
+    //         );
+    //     }
+    //     io::stdout().flush().unwrap();
+    //     true
+    // });
 
     let mut fo = git2::FetchOptions::new();
-    fo.remote_callbacks(cb);
+    // fo.remote_callbacks(cb);
     // Always fetch all tags.
     // Perform a download and also update tips
     fo.download_tags(git2::AutotagOption::All);
-    println!("Fetching {} for repo", remote.name().unwrap());
+    println!("Fetching {} for {}", remote.name().unwrap(), repo_path);
     remote.fetch(refs, Some(&mut fo), None)?;
 
     // If there are local objects (we got a thin pack), then tell the user
     // how many objects we saved from having to cross the network.
     let stats = remote.stats();
-    if stats.local_objects() > 0 {
+    if stats.local_objects() > 0 && stats.received_bytes() > 0 {
         println!(
             "\rReceived {}/{} objects in {} bytes (used {} local \
             objects)",
@@ -51,13 +52,6 @@ fn do_fetch<'a>(
             stats.total_objects(),
             stats.indexed_objects(),
             stats.received_bytes(),
-        );
-    } else {
-        println!(
-            "\rReceived {}/{} objects in {} bytes",
-            stats.indexed_objects(),
-            stats.total_objects(),
-            stats.received_bytes()
         );
     }
 
@@ -165,7 +159,7 @@ fn do_merge<'a>(
         let head_commit = repo.reference_to_annotated_commit(&repo.head()?)?;
         normal_merge(&repo, &head_commit, &fetch_commit)?;
     } else {
-        println!("Nothing to do...");
+        // println!("Nothing to do...");
     }
     Ok(())
 }
@@ -173,9 +167,31 @@ fn do_merge<'a>(
 fn run(repo_path: String) -> Result<(), git2::Error> {
     let remote_name = "origin";
     let remote_branch = "master";
-    let repo = Repository::open(repo_path)?;
-    let mut remote = repo.find_remote(remote_name)?;
-    let fetch_commit = do_fetch(&repo, &[remote_branch], &mut remote)?;
+    let repo = Repository::open(&repo_path)?;
+    let mut remote = repo.find_remote(remote_name).or_else(|find_remote_err| {
+        let remotes = repo.remotes()?;
+        if remotes.len() == 1 {
+            return match remotes.get(0) {
+                Some(remote) => {
+                    println!("using non origin remote {}", remote);
+                    repo.find_remote(remote)
+                },
+                None => Err(find_remote_err),
+            };
+        } else if remotes.len() > 1 {
+            println!("{}", repo_path);
+            println!("multiple remotes:");
+            for r in remotes.iter() {
+                println!("  {:?}", r);
+            }
+            println!("Unable to pick between them as no \"origin\" exists.");
+        } else {
+            println!("{}", repo_path);
+            println!("no remotes found");
+        }
+        Err(find_remote_err)
+    })?;
+    let fetch_commit = do_fetch(&repo, &[remote_branch], &mut remote, &repo_path)?;
     do_merge(&repo, &remote_branch, fetch_commit)
 
 }
