@@ -4,6 +4,28 @@ use std::str;
 use std::fs;
 use std::env;
 
+#[derive(Debug)]
+enum Outcome {
+    NotARepo,
+    NoRemotes,
+    BadFsEntry,
+    Dirty,
+    RemoteHeadMismatch,
+    UpToDate,
+    Updated,
+    NoClearOrigin,
+    BareRepository,
+    FailedFetch(git2::Error),
+    Other(String) // For unconsidered errors.
+}
+
+#[derive(Debug)]
+struct Upgit {
+    outcome: Outcome,
+    path:   String,
+    report: String,
+}
+
 fn do_fetch<'a>(
     repo: &'a git2::Repository,
     refs: &[&str],
@@ -75,7 +97,7 @@ fn fast_forward(
     repo.checkout_head(Some(
         git2::build::CheckoutBuilder::default()
             // force required to make the working directory actually get updated/ 
-            // could add logic to handle dirty working diredtory states
+            // could add logic to handle dirty working directory states
             .force(),
     ))?;
     Ok(())
@@ -164,50 +186,122 @@ fn do_merge<'a>(
     Ok(())
 }
 
-fn run(repo_path: String) -> Result<(), git2::Error> {
-    let remote_name = "origin";
-    let remote_branch = "master";
-    let repo = Repository::open(&repo_path)?;
-    let mut remote = repo.find_remote(remote_name).or_else(|find_remote_err| {
-        let remotes = repo.remotes()?;
-        if remotes.len() == 1 {
-            return match remotes.get(0) {
+fn get_origin_remote(repo: &Repository) -> Result<git2::Remote, Outcome> {
+    repo.find_remote("origin").or_else(|find_remote_err| {
+        let remotes = match repo.remotes() {
+            Ok(r) => r,
+            Err(err) => {
+                println!("remotes listing err {:?}", err);
+                return Err(Outcome::NoRemotes)
+            },
+        };
+
+        return if remotes.len() == 1 {
+            match remotes.get(0) {
                 Some(remote) => {
                     println!("using non origin remote {}", remote);
-                    repo.find_remote(remote)
+                    match repo.find_remote(remote) {
+                        Ok(remote) => Ok(remote),
+                        Err(err) => Err(Outcome::Other(format!("Why u no remote? {:?}", err)))
+                    }
                 },
-                None => Err(find_remote_err),
-            };
+                None => Err(Outcome::Other(format!("{}", find_remote_err))),
+            }
         } else if remotes.len() > 1 {
-            println!("{}", repo_path);
             println!("multiple remotes:");
             for r in remotes.iter() {
                 println!("  {:?}", r);
             }
             println!("Unable to pick between them as no \"origin\" exists.");
+            Err(Outcome::NoClearOrigin)
         } else {
-            println!("{}", repo_path);
-            println!("no remotes found");
+            Err(Outcome::NoRemotes)
         }
-        Err(find_remote_err)
-    })?;
-    let fetch_commit = do_fetch(&repo, &[remote_branch], &mut remote, &repo_path)?;
-    do_merge(&repo, &remote_branch, fetch_commit)
+    })
+}
 
+fn run(repo_path: String) -> Upgit {
+    let remote_branch = "master";
+    let repo = match Repository::open(&repo_path) {
+        Ok(r) => r,
+        Err(r) => {
+            return Upgit {
+                outcome: Outcome::NotARepo,
+                path:   format!("{}", repo_path),
+                report: String::from(""),
+            }
+        },
+    };
+    let mut remote = match get_origin_remote(&repo) {
+        Ok(r) => r,
+        Err(outcome) => {
+            return Upgit {
+                path: repo_path,
+                outcome,
+                report: String::from(""),
+            };
+        },
+    };
+
+    // NotARepo,
+    // NoRemotes,
+    // Dirty,
+    // RemoteHeadMismatch,
+    // UpToDate,
+    // Updated,
+    // NoClearOrigin,
+    // BareRepository,
+    // Other // For unconsidered errors.
+
+    let fetch_commit = match do_fetch(&repo, &[remote_branch], &mut remote, &repo_path) {
+        Ok(x) => x,
+        Err(err) => {
+            return Upgit {
+                outcome: Outcome::FailedFetch(err),
+                path:   format!("{}", repo_path),
+                report: String::from(""),
+            }
+        },
+    };
+    Upgit {
+        outcome: Outcome::Other(String::from("Probably a logic error :/")),
+        path:   format!("{}", repo_path),
+        report: String::from(""),
+    }
+    // do_merge(&repo, &remote_branch, fetch_commit)
+}
+
+fn print_results(upgits: &Vec<Upgit>) {
+    println!("processed {} entries", upgits.len());
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     let repo_containers = &args[1..];
-    println!("{:?}", repo_containers);
 
     for rc in repo_containers {
-        let repo_dir = fs::read_dir(rc).unwrap();
-        for repo in repo_dir {
-            let repo = repo.unwrap();
-            if repo.metadata().unwrap().is_dir() {
-                let _ = run(repo.path().display().to_string());
+        let upgits: Vec<_> = fs::read_dir(rc).unwrap().map(|repo| {
+            match repo {
+                Ok(repo) => {
+                    let repo_path = repo.path().display().to_string();
+                    if repo.metadata().unwrap().is_dir() {
+                        run(repo_path)
+                    } else {
+                        Upgit {
+                            path: repo_path,
+                            report: String::from(""),
+                            outcome: Outcome::NotARepo,
+                        }
+                    }
+                },
+                Err(err) => Upgit {
+                    path: String::from(""),
+                    report: format!("{:?}", err),
+                    outcome: Outcome::BadFsEntry,
+                }
             }
-        }
+        }).collect();
+
+        print_results(&upgits);
     }
 }
