@@ -1,10 +1,12 @@
 use git2::Repository;
-use std::io::{self, Write};
+// use std::io::{self, Write};
 use std::str;
 use std::fs;
 use std::env;
+use std::hash::Hash;
+use std::collections::HashMap;
 
-#[derive(Debug)]
+#[derive(Debug, Hash, PartialEq, Eq, Clone)]
 enum Outcome {
     NotARepo,
     NoRemotes,
@@ -15,11 +17,11 @@ enum Outcome {
     Updated,
     NoClearOrigin,
     BareRepository,
-    FailedFetch(git2::Error),
+    FailedFetch(String),
     Other(String) // For unconsidered errors.
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Upgit {
     outcome: Outcome,
     path:   String,
@@ -224,7 +226,7 @@ fn run(repo_path: String) -> Upgit {
     let remote_branch = "master";
     let repo = match Repository::open(&repo_path) {
         Ok(r) => r,
-        Err(r) => {
+        Err(_) => {
             return Upgit {
                 outcome: Outcome::NotARepo,
                 path:   format!("{}", repo_path),
@@ -243,21 +245,11 @@ fn run(repo_path: String) -> Upgit {
         },
     };
 
-    // NotARepo,
-    // NoRemotes,
-    // Dirty,
-    // RemoteHeadMismatch,
-    // UpToDate,
-    // Updated,
-    // NoClearOrigin,
-    // BareRepository,
-    // Other // For unconsidered errors.
-
     let fetch_commit = match do_fetch(&repo, &[remote_branch], &mut remote, &repo_path) {
         Ok(x) => x,
         Err(err) => {
             return Upgit {
-                outcome: Outcome::FailedFetch(err),
+                outcome: Outcome::FailedFetch(format!("{:?}", err)),
                 path:   format!("{}", repo_path),
                 report: String::from(""),
             }
@@ -271,8 +263,108 @@ fn run(repo_path: String) -> Upgit {
     // do_merge(&repo, &remote_branch, fetch_commit)
 }
 
+fn group_upgits(upgits: Vec<Upgit>) -> HashMap<Outcome, Vec<Upgit>> {
+    let mut grouped: HashMap<Outcome, Vec<Upgit>> = HashMap::new();
+    upgits.into_iter().fold(&mut grouped, move |grouped, u| {
+        match grouped.get_mut(&u.outcome) {
+            Some(mutable_group) => {
+                mutable_group.push(u);
+            },
+            None => {
+                let _ = grouped.insert(u.outcome.clone(), vec![u]);
+            },
+        };
+        grouped
+    });
+    grouped
+}
+
 fn print_results(upgits: &Vec<Upgit>) {
+    let groups = group_upgits(upgits.clone());
     println!("processed {} entries", upgits.len());
+    groups.get(&Outcome::NotARepo).and_then(|upgits| -> Option<()> {
+        println!("not repos ({}):", upgits.len());
+        for u in upgits {
+            println!("  {}", u.path);
+        };
+        None
+    });
+
+    groups.get(&Outcome::NoRemotes).and_then(|upgits| -> Option<()> {
+        println!("no remotes ({}):", upgits.len());
+        for u in upgits {
+            println!("  {}", u.path);
+        };
+        None
+    });
+
+    groups.get(&Outcome::BadFsEntry).and_then(|upgits| -> Option<()> {
+        println!("Bad filesystem ({}):", upgits.len());
+        for u in upgits {
+            println!("  {}", u.report);
+        };
+        None
+    });
+
+    groups.get(&Outcome::Dirty).and_then(|upgits| -> Option<()> {
+        println!("Dirty, unable to update ({}):", upgits.len());
+        for u in upgits {
+            println!("  {}", u.path);
+        };
+        None
+    });
+
+    groups.get(&Outcome::RemoteHeadMismatch).and_then(|upgits| -> Option<()> {
+        println!("Remote head mismatch ({}):", upgits.len());
+        for u in upgits {
+            println!("  {}", u.path);
+        };
+        None
+    });
+
+    groups.get(&Outcome::UpToDate).and_then(|upgits| -> Option<()> {
+        println!("Up to date ({}):", upgits.len());
+        None
+    });
+
+    groups.get(&Outcome::Updated).and_then(|upgits| -> Option<()> {
+        println!("Updated ({}):", upgits.len());
+        for u in upgits {
+            println!("");
+            println!("{}:", u.path);
+            println!("----------------------");
+            println!("{}", u.report);
+            println!("----------------------");
+            println!("");
+        };
+        None
+    });
+
+    groups.get(&Outcome::NoClearOrigin).and_then(|upgits| -> Option<()> {
+        println!("No clear remote origin ({}):", upgits.len());
+        for u in upgits {
+            println!("  {}", u.path);
+            println!("{}", u.report);
+        };
+        None
+    });
+
+    groups.get(&Outcome::BareRepository).and_then(|upgits| -> Option<()> {
+        println!("Bare repository, not updating ({}):", upgits.len());
+        None
+    });
+
+    for (g, _) in groups {
+        match g {
+            Outcome::FailedFetch(fail_reason) => {
+                println!("{}", fail_reason)
+            },
+            Outcome::Other(ruh_roah) => {
+                println!("ruh roah: {}", ruh_roah)
+            },
+            _ => {}
+        }
+    }
 }
 
 fn main() {
