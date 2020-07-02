@@ -97,6 +97,7 @@ fn fast_forward(
     };
     let msg = format!("Fast-Forward: Setting {} to id: {}", name, rc.id());
     // println!("{}", msg);
+
     match lb.set_target(rc.id(), &msg) {
         Err(err) => {
             return Upgit {
@@ -160,10 +161,15 @@ fn normal_merge(
     };
     let merge_base_commit = match repo.merge_base(local.id(), remote.id()) {
         Ok(x) => x,
-        Err(err) => return Upgit {
-            path: repo_path,
-            outcome: Outcome::Other(String::from("Unable to find a merge base between two commits")),
-            report: format!("{}", err),
+        Err(err) => {
+            println!("{}: local.id(), remote.id()", repo_path);
+            println!("{}", local.id());
+            println!("{}", remote.id());
+            return Upgit {
+                path: repo_path,
+                outcome: Outcome::Other(String::from("Unable to find a merge base between two commits")),
+                report: format!("{}", err),
+            }
         }
     };
     let ancestor = match repo.find_commit(merge_base_commit).and_then(|x| { x.tree() }) {
@@ -505,7 +511,7 @@ fn run(repo_path: String) -> Upgit {
             return Upgit {
                 path: repo_path,
                 outcome: Outcome::Dirty,
-                report: statuses.join("    \n"),
+                report: statuses.join("\n    "),
             }
         },
         _ => {},
@@ -550,7 +556,7 @@ fn print_results(upgits: &Vec<Upgit>) {
     let groups = group_upgits(upgits.clone());
     println!("processed {} repos", upgits.len());
     groups.get(&Outcome::NotARepo).and_then(|upgits| -> Option<()> {
-        println!("not repos ({}):", upgits.len());
+        println!("not a repo ({}):", upgits.len());
         for u in upgits {
             println!("  {}", u.path);
         };
@@ -558,52 +564,9 @@ fn print_results(upgits: &Vec<Upgit>) {
     });
 
     groups.get(&Outcome::NoRemotes).and_then(|upgits| -> Option<()> {
-        println!("no remotes ({}):", upgits.len());
+        println!("no remote ({}):", upgits.len());
         for u in upgits {
             println!("  {}", u.path);
-        };
-        None
-    });
-
-    groups.get(&Outcome::BadFsEntry).and_then(|upgits| -> Option<()> {
-        println!("Bad filesystem ({}):", upgits.len());
-        for u in upgits {
-            println!("  {}", u.report);
-        };
-        None
-    });
-
-    groups.get(&Outcome::Dirty).and_then(|upgits| -> Option<()> {
-        println!("Dirty, unable to update ({}):", upgits.len());
-        for u in upgits {
-            println!("  {}", u.path);
-            println!("    {}", u.report);
-        };
-        None
-    });
-
-    groups.get(&Outcome::RemoteHeadMismatch).and_then(|upgits| -> Option<()> {
-        println!("Remote head mismatch ({}):", upgits.len());
-        for u in upgits {
-            println!("  {}", u.path);
-        };
-        None
-    });
-
-    groups.get(&Outcome::UpToDate).and_then(|upgits| -> Option<()> {
-        println!("Up to date ({}):", upgits.len());
-        None
-    });
-
-    groups.get(&Outcome::Updated).and_then(|upgits| -> Option<()> {
-        println!("Updated ({}):", upgits.len());
-        for u in upgits {
-            println!("");
-            println!("{}:", u.path);
-            println!("----------------------");
-            println!("{}", u.report);
-            println!("----------------------");
-            println!("");
         };
         None
     });
@@ -622,16 +585,94 @@ fn print_results(upgits: &Vec<Upgit>) {
         None
     });
 
+    groups.get(&Outcome::BadFsEntry).and_then(|upgits| -> Option<()> {
+        println!("Bad filesystem ({}):", upgits.len());
+        for u in upgits {
+            println!("  {}", u.report);
+        };
+        None
+    });
+
+    groups.get(&Outcome::RemoteHeadMismatch).and_then(|upgits| -> Option<()> {
+        println!("Remote head mismatch ({}):", upgits.len());
+        for u in upgits {
+            println!("  {}", u.path);
+        };
+        None
+    });
+
+    groups.get(&Outcome::UpToDate).and_then(|upgits| -> Option<()> {
+        println!("Up to date ({}):", upgits.len());
+        None
+    });
+
+    groups.get(&Outcome::FailedMergeAnalysis).and_then(|upgits| -> Option<()> {
+        println!("Failed merge analysis ({}):", upgits.len());
+        None
+    });
+
+    groups.get(&Outcome::RevertedConflict).and_then(|upgits| -> Option<()> {
+        println!("Reverted conflict ({}):", upgits.len());
+        for u in upgits {
+            println!("  {}", u.path);
+        };
+        None
+    });
+
+    groups.get(&Outcome::UnresolvedConflict).and_then(|upgits| -> Option<()> {
+        println!("Unresolved conflict ({}):", upgits.len());
+        for u in upgits {
+            println!("  {}", u.path);
+        };
+        None
+    });
+
+    groups.get(&Outcome::Dirty).and_then(|upgits| -> Option<()> {
+        println!("Dirty, unable to update ({}):", upgits.len());
+        for u in upgits {
+            println!("  {}", u.path);
+            println!("    {}", u.report);
+        };
+        None
+    });
+
+    groups.get(&Outcome::Updated).and_then(|upgits| -> Option<()> {
+        println!("Updated ({}):", upgits.len());
+        for u in upgits {
+            println!("");
+            println!("{}:", u.path);
+            println!("----------------------");
+            println!("{}", u.report);
+            println!("");
+        };
+        None
+    });
+
     for (g, upgits) in groups {
         match g {
-            Outcome::FailedFetch(fail_reason) => {
-                println!("{:?}: {}", upgits.get(0), fail_reason);
+            Outcome::FailedFetch(_) => {
+                println!("failed fetch ({}):", upgits.len());
+                for u in upgits {
+                    println!("{}", u.path);
+                    println!("{:?}", u.outcome);
+                    println!("{}", u.report);
+                }
             },
-            Outcome::Other(ruh_roah) => {
-                println!("ruh roah: {}, {:?}", ruh_roah, upgits.get(0));
+            Outcome::Other(_) => {
+                println!("other error ({})", upgits.len());
+                for u in upgits {
+                    println!("{}", u.path);
+                    println!("{:?}", u.outcome);
+                    println!("{}", u.report);
+                }
             },
-            Outcome::NeedsResolution(msg) => {
-                println!("repo needs resolution: {}, {:?}", msg, upgits.get(0));
+            Outcome::NeedsResolution(_) => {
+                println!("needs resolution ({}):", upgits.len());
+                for u in upgits {
+                    println!("{}", u.path);
+                    println!("{:?}", u.outcome);
+                    println!("{}", u.report);
+                }
             },
             _ => {}
         }
