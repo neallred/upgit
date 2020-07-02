@@ -9,15 +9,15 @@ Inspired by countless minutes lost repeating `cd <some-repo-path> && git pull` f
 From the repo root, run
 
 ```
-go run cmd/upgit.go <relative path(s) to repo container folder(s)>
+cargo run <relative path(s) to repo container folder(s)>
 ```
 
-For example, if I stored all my repos in ~/github, `go run cmd/upgit.go ~/github`
+For example, if I stored all my repos in ~/github, `cargo run ~/github`
 
-## Installing
+## building
 
 ```
-go build -o upgit cmd/upgit.go
+cargo build --release
 ```
 
 Move upgit executable to somewhere on your `$PATH`.
@@ -33,7 +33,8 @@ TBD
 From the repo root, run
 
 ```
-go build -o test/common cmd/upgit.go
+cargo build
+cp target/debug/upgit test/common/upgit
 ./test/common/make-git-folder.sh
 ./test/common/upgit ./test/common/git-folder
 ```
@@ -46,7 +47,8 @@ Automated assertions are still TODO, but you can manually check if STDOUT matche
 From the repo root, run
 
 ```
-GOOS=linux go build -o test/common/upgit-linux cmd/upgit.go
+cargo build
+cp target/debug/upgit test/common/upgit-linux
 docker build -t upgit-test-pull-image -f ./test/e2e/test-pull.Dockerfile ./test/e2e
 docker build -t upgit-git-server -f ./test/e2e/git-server.Dockerfile ./test/e2e
 cd test/e2e
