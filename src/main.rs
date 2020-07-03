@@ -5,6 +5,8 @@ use std::env;
 use std::hash::Hash;
 use std::collections::HashMap;
 use std::io::{self, Write};
+use std::sync::mpsc;
+use std::thread;
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 enum Outcome {
@@ -97,6 +99,22 @@ fn fast_forward(
     };
     let msg = format!("Fast-Forward: Setting {} to id: {}", name, rc.id());
     // println!("{}", msg);
+
+    //
+    // let remote_tree = remote_commit.tree()?;
+    // let local_tree = local_commit.tree()?;
+    // let the_diff = repo.diff_tree_to_tree(Some(local_tree), Some(remote_tree), Some(opts));
+    // opts is something like
+    // let mut opts = git::DiffOptions::new()
+    // .minimal(true)
+    //
+    // git struct Diff
+    // the_diff.print(
+    //      git::DiffFormat::NameStatus,
+    //      |diff_delta, option_diff_hunk, DiffLine| {
+    //        true
+    //      }
+    // )
 
     match lb.set_target(rc.id(), &msg) {
         Err(err) => {
@@ -685,35 +703,67 @@ fn main() {
 
     let mut counter = 0;
     for rc in repo_containers {
+        let num_threads = 5;
+
         print!("Upgitting {}:", rc);
         io::stdout().flush().unwrap();
-        let num_repos = fs::read_dir(rc).unwrap().collect::<Vec<_>>().len(); 
-        let upgits: Vec<_> = fs::read_dir(rc).unwrap().map(|repo| {
+        let (tx, rx) = mpsc::channel();
+
+        let upgits_vec: Vec<_> = fs::read_dir(rc).unwrap().collect(); 
+        let num_repos = upgits_vec.len();
+        let workload_size = num_repos / num_threads;
+        let mut children = Vec::new();
+        
+        for thread_i in 1..(num_threads+1) {
+            let rc_clone = rc.clone();
+            let tx_clone = mpsc::Sender::clone(&tx);
+            let child = thread::spawn(move || {
+                let begin = (thread_i - 1) * workload_size;
+                let take = if thread_i == num_threads {
+                    num_repos 
+                } else {
+                    workload_size
+                };
+                println!("begin: {}, end: {}", begin, begin + workload_size);
+                let repos: Vec<_> = fs::read_dir(rc_clone).unwrap().skip(begin).take(take).collect(); 
+                for repo in repos {
+                    let upgit = match repo {
+                        Ok(repo) => {
+                            let repo_path = repo.path().display().to_string();
+                            if repo.metadata().unwrap().is_dir() {
+                                run(repo_path)
+                            } else {
+                                Upgit {
+                                    path: repo_path,
+                                    report: String::from(""),
+                                    outcome: Outcome::NotARepo,
+                                }
+                            }
+                        },
+                        Err(err) => Upgit {
+                            path: String::from(""),
+                            report: format!("{:?}", err),
+                            outcome: Outcome::BadFsEntry,
+                        }
+                    };
+                    // println!("{}", thread_i);
+                    tx_clone.send(upgit).unwrap();
+                }
+            });
+            children.push(child);
+        }
+        drop(tx);
+        // for child in children {
+        //     child.join().expect("oops! the child thread panicked");
+        // }
+
+        let mut upgits = vec![];
+        for upgit in rx {
             counter += 1;
             print!("\rUpgitting {}: {} of {}", rc, counter, num_repos);
             io::stdout().flush().unwrap();
-            match repo {
-                Ok(repo) => {
-                    let repo_path = repo.path().display().to_string();
-                    if repo.metadata().unwrap().is_dir() {
-                        run(repo_path)
-                    } else {
-                        Upgit {
-                            path: repo_path,
-                            report: String::from(""),
-                            outcome: Outcome::NotARepo,
-                        }
-                    }
-                },
-                Err(err) => Upgit {
-                    path: String::from(""),
-                    report: format!("{:?}", err),
-                    outcome: Outcome::BadFsEntry,
-                }
-            }
-        }).collect();
-
-        println!("");
+            upgits.push(upgit); 
+        };
         print_results(&upgits);
     }
 }
