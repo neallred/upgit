@@ -8,6 +8,7 @@ use std::io::{self, Write};
 use std::sync::mpsc;
 use std::thread;
 use std::path::Path;
+use std::cmp;
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 enum Outcome {
@@ -619,7 +620,8 @@ fn main() {
 
     let mut counter = 0;
     for rc in repo_containers {
-        let num_threads = 5;
+        // 1-8, leaving at least 2 open for other programs
+        let num_threads = cmp::min(8, cmp::max(1, num_cpus::get() - 2));
 
         print!("Upgitting {}:", rc);
         io::stdout().flush().unwrap();
