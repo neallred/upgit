@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::mpsc;
 use std::thread;
+use std::path::Path;
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 enum Outcome {
@@ -101,20 +102,46 @@ fn fast_forward(
     // println!("{}", msg);
 
     //
-    // let remote_tree = remote_commit.tree()?;
-    // let local_tree = local_commit.tree()?;
-    // let the_diff = repo.diff_tree_to_tree(Some(local_tree), Some(remote_tree), Some(opts));
-    // opts is something like
-    // let mut opts = git::DiffOptions::new()
-    // .minimal(true)
-    //
+    
+    let remote_tree = repo.find_commit(rc.id()).unwrap().tree().unwrap();
+    let local_tree = lb.peel_to_tree().unwrap();
+    let mut opts = git2::DiffOptions::new();
+    opts.minimal(true);
+    let the_diff = repo.diff_tree_to_tree(Some(&local_tree), Some(&remote_tree), Some(&mut opts)).unwrap();
     // git struct Diff
-    // the_diff.print(
-    //      git::DiffFormat::NameStatus,
-    //      |diff_delta, option_diff_hunk, DiffLine| {
-    //        true
-    //      }
-    // )
+    let mut diff_report = vec![String::from("")];
+    println!("diff for {}:", repo_path);
+    the_diff.print(
+         git2::DiffFormat::NameStatus,
+         |diff_delta, _option_diff_hunk, _diff_line| {
+             let status = diff_delta.status();
+             let old_file = diff_delta.old_file().path().unwrap_or(Path::new("/unknown")).display();
+             let new_file = diff_delta.new_file().path().unwrap_or(Path::new("/unknown")).display();
+             let report_str = match status {
+                 git2::Delta::Unmodified => format!(""),
+                 git2::Delta::Added => format!("Added: {}", new_file),
+                 git2::Delta::Deleted => format!("Deleted: {}", old_file),
+                 git2::Delta::Modified => format!("Changed: {}", new_file),
+                 git2::Delta::Renamed => format!("mv: \"{}\" -> \"{}\"", old_file, new_file),
+                 git2::Delta::Copied => format!("Copied: \"{}\" -> \"{}\"", old_file, new_file),
+                 git2::Delta::Ignored => format!("Ignored: {}", new_file),
+                 git2::Delta::Untracked => format!("Unchanged: {}", new_file),
+                 git2::Delta::Typechange => format!("Typechange: {}", new_file),
+                 git2::Delta::Unreadable => format!("Unreadable: {}", new_file),
+                 git2::Delta::Conflicted => format!("Conflicted: {}", new_file),
+             };
+
+             diff_report.push(report_str);
+             // println!("num files {}", diff_delta.nfiles());
+             // println!("num files {:?}", );
+             // option_diff_hunk.and_then(|diff_hunk| {
+             //     println!("diff hunk {}", str::from_utf8(diff_hunk.header()).unwrap());
+             //     Some(())
+             // });
+
+             true
+         }
+    ).unwrap();
 
     match lb.set_target(rc.id(), &msg) {
         Err(err) => {
@@ -145,7 +172,7 @@ fn fast_forward(
         Ok(()) => Upgit {
             path: repo_path,
             outcome: Outcome::Updated,
-            report: String::from(""),
+            report: diff_report.join("\n    "),
         },
         Err(err) => Upgit {
             path: repo_path,
@@ -724,7 +751,6 @@ fn main() {
                 } else {
                     workload_size
                 };
-                println!("begin: {}, end: {}", begin, begin + workload_size);
                 let repos: Vec<_> = fs::read_dir(rc_clone).unwrap().skip(begin).take(take).collect(); 
                 for repo in repos {
                     let upgit = match repo {
