@@ -94,15 +94,6 @@ fn fast_forward(
     rc: &git2::AnnotatedCommit,
     repo_path: String,
 ) -> Upgit {
-    let name = match lb.name() {
-        Some(s) => s.to_string(),
-        None => String::from_utf8_lossy(lb.name_bytes()).to_string(),
-    };
-    let msg = format!("Fast-Forward: Setting {} to id: {}", name, rc.id());
-    // println!("{}", msg);
-
-    //
-    
     let remote_tree = repo.find_commit(rc.id()).unwrap().tree().unwrap();
     let local_tree = lb.peel_to_tree().unwrap();
     let mut opts = git2::DiffOptions::new();
@@ -110,7 +101,6 @@ fn fast_forward(
     let the_diff = repo.diff_tree_to_tree(Some(&local_tree), Some(&remote_tree), Some(&mut opts)).unwrap();
     // git struct Diff
     let mut diff_report = vec![String::from("")];
-    println!("diff for {}:", repo_path);
     the_diff.print(
          git2::DiffFormat::NameStatus,
          |diff_delta, _option_diff_hunk, _diff_line| {
@@ -132,17 +122,17 @@ fn fast_forward(
              };
 
              diff_report.push(report_str);
-             // println!("num files {}", diff_delta.nfiles());
-             // println!("num files {:?}", );
-             // option_diff_hunk.and_then(|diff_hunk| {
-             //     println!("diff hunk {}", str::from_utf8(diff_hunk.header()).unwrap());
-             //     Some(())
-             // });
 
              true
          }
     ).unwrap();
 
+    let name = match lb.name() {
+        Some(s) => s.to_string(),
+        None => String::from_utf8_lossy(lb.name_bytes()).to_string(),
+    };
+    let msg = format!("Fast-Forward: Setting {} to id: {}", name, rc.id());
+    
     match lb.set_target(rc.id(), &msg) {
         Err(err) => {
             return Upgit {
@@ -207,9 +197,7 @@ fn normal_merge(
     let merge_base_commit = match repo.merge_base(local.id(), remote.id()) {
         Ok(x) => x,
         Err(err) => {
-            println!("{}: local.id(), remote.id()", repo_path);
-            println!("{}", local.id());
-            println!("{}", remote.id());
+            println!("\n{}: local.id() = {}, remote.id() = {}", repo_path, local.id(), remote.id());
             return Upgit {
                 path: repo_path,
                 outcome: Outcome::Other(String::from("Unable to find a merge base between two commits")),
@@ -442,8 +430,7 @@ fn get_origin_remote(repo: &Repository) -> Result<git2::Remote, Outcome> {
     repo.find_remote("origin").or_else(|find_remote_err| {
         let remotes = match repo.remotes() {
             Ok(r) => r,
-            Err(err) => {
-                println!("remotes listing err {:?}", err);
+            Err(_) => {
                 return Err(Outcome::NoRemotes)
             },
         };
@@ -460,11 +447,6 @@ fn get_origin_remote(repo: &Repository) -> Result<git2::Remote, Outcome> {
                 None => Err(Outcome::Other(format!("{}", find_remote_err))),
             }
         } else if remotes.len() > 1 {
-            println!("multiple remotes:");
-            for r in remotes.iter() {
-                println!("  {:?}", r);
-            }
-            println!("Unable to pick between them as no \"origin\" exists.");
             Err(Outcome::NoClearOrigin)
         } else {
             Err(Outcome::NoRemotes)
@@ -573,12 +555,6 @@ fn run(repo_path: String) -> Upgit {
         },
     };
     return do_merge(&repo, &remote_branch, fetch_commit, repo_path)
-
-    // Upgit {
-    //     outcome: Outcome::Other(String::from("Probably a logic error :/")),
-    //     path:   format!("{}", repo_path),
-    //     report: String::from(""),
-    // }
 }
 
 fn group_upgits(upgits: Vec<Upgit>) -> HashMap<Outcome, Vec<Upgit>> {
