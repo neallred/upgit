@@ -42,6 +42,7 @@ fn do_fetch<'a>(
     repo: &'a git2::Repository,
     refs: &[&str],
     remote: &'a mut git2::Remote,
+    local_branch_name: &str,
 ) -> Result<git2::AnnotatedCommit<'a>, git2::Error> {
     // let mut cb = git2::RemoteCallbacks::new();
 
@@ -87,8 +88,9 @@ fn do_fetch<'a>(
         );
     }
 
-    let fetch_head = repo.find_reference("FETCH_HEAD")?;
-    Ok(repo.reference_to_annotated_commit(&fetch_head)?)
+    let local_branch = repo.find_branch(local_branch_name, git2::BranchType::Local)?;
+    let upstream_branch = local_branch.upstream()?;
+    Ok(repo.reference_to_annotated_commit(upstream_branch.get())?)
 }
 
 fn fast_forward(
@@ -183,6 +185,16 @@ fn normal_merge(
             format!("could not find remote commit\n    {}", err),
         ),
     };
+
+    // match repo.graph_descendant_of(remote.id(), local.id()) {
+    //     Ok(is_ancestor) => {
+    //         println!("remote is ancestor: {}", is_ancestor);
+    //     },
+    //     Err(err) => {
+    //         println!("{:?}", err);
+    //     },
+    // };
+
     let merge_base_commit = match repo.merge_base(local.id(), remote.id()) {
         Ok(x) => x,
         Err(err) => return mk_upgit_other(
@@ -450,11 +462,20 @@ fn check_repo_dirty(repo: &Repository) -> Option<Vec<String>> {
 }
 
 fn run(repo_path: String) -> Upgit {
-    let remote_branch = "master";
     let mk_upgit = with_path(repo_path.clone());
+
     let repo = match Repository::open(&repo_path) {
         Ok(r) => r,
         Err(_) => return mk_upgit(Outcome::NotARepo, format!("")),
+    };
+    let remote_branch = match repo.head() {
+        Ok(the_head) => {
+            match the_head.shorthand() {
+                Some(x) => String::from(x),
+                None => return mk_upgit(Outcome::WIPOther, format!("not able to get local head branch name")),
+            }
+        },
+        Err(err) => return mk_upgit(Outcome::WIPOther, format!("not able to get local head branch name, {}", err)),
     };
     let mut remote = match get_origin_remote(&repo, repo_path.clone()) {
         Ok(r) => r,
@@ -467,7 +488,7 @@ fn run(repo_path: String) -> Upgit {
         _ => {},
     };
 
-    let fetch_commit = match do_fetch(&repo, &[remote_branch], &mut remote) {
+    let fetch_commit = match do_fetch(&repo, &[&remote_branch], &mut remote, &remote_branch) {
         Ok(x) => x,
         Err(err) => return mk_upgit(Outcome::FailedFetch, format!("{:?}", err)),
     };
