@@ -10,6 +10,9 @@ use std::thread;
 use std::path::Path;
 use std::cmp;
 
+// TODO Should this attempt to update submodules of repos with submodules?
+// Maybe as a configurable option?
+// E.g. [redox](https://gitlab.com/redox-os.org/redox-os/redox)
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 enum Outcome {
     // #TODO: Should these be consolidated? Does the user care or want to know
