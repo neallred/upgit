@@ -13,6 +13,9 @@ use std::cmp;
 // TODO Should this attempt to update submodules of repos with submodules?
 // Maybe as a configurable option?
 // E.g. [redox](https://gitlab.com/redox-os.org/redox-os/redox)
+//
+// TODO Need to add a way for authing repos.
+// E.g. to resolve: Error { code: -1, klass: 34, message: "remote authentication required but no callback set" }
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 enum Outcome {
     // #TODO: Should these be consolidated? Does the user care or want to know
@@ -391,7 +394,6 @@ fn get_origin_remote(repo: &Repository, repo_path: String) -> Result<git2::Remot
         return if remotes.len() == 1 {
             match remotes.get(0) {
                 Some(remote) => {
-                    println!("using non origin remote {}", remote);
                     match repo.find_remote(remote) {
                         Err(err) => Err(mk_upgit_other(
                             format!("Err using non origin remote {}\n    {:?}", remote, err)
