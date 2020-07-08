@@ -90,11 +90,19 @@ fn do_fetch<'a>(
             }
             return Cred::userpass_plaintext(user, &pass);
         }
+
+        let stdin = io::stdin();
+        let mut ssh_pass = String::from("");
+        println!("\nEnter passphrase for private key $HOME/.ssh/id_rsa (or enter for blank)");
+        for line in stdin.lock().lines() {
+            ssh_pass = line.unwrap();
+            break;
+        }
         Cred::ssh_key(
             username_from_url.unwrap(),
-            None,
+            Some(std::path::Path::new(&format!("{}/.ssh/id_rsa.pub", env::var("HOME").unwrap()))),
             std::path::Path::new(&format!("{}/.ssh/id_rsa", env::var("HOME").unwrap())),
-            None,
+            if ssh_pass == String::from("") { None } else { Some(&ssh_pass) },
         )
     });
 
