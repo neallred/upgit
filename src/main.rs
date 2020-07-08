@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::io;
 use std::io::prelude::*;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::path::Path;
 use std::cmp;
@@ -52,6 +53,7 @@ fn do_fetch<'a>(
     refs: &[&str],
     remote: &'a mut git2::Remote,
     local_branch_name: &str,
+    ssh_pass_arc: SshPass,
 ) -> Result<git2::AnnotatedCommit<'a>, git2::Error> {
     let mut cb = git2::RemoteCallbacks::new();
 
@@ -92,11 +94,19 @@ fn do_fetch<'a>(
         }
 
         let stdin = io::stdin();
+
+        let mut stored_ssh_pass = ssh_pass_arc.lock().unwrap();
         let mut ssh_pass = String::from("");
-        println!("\nEnter passphrase for private key $HOME/.ssh/id_rsa (or enter for blank)");
-        for line in stdin.lock().lines() {
-            ssh_pass = line.unwrap();
-            break;
+
+        if *stored_ssh_pass != String::from("") {
+            ssh_pass = stored_ssh_pass.clone();
+        } else {
+            println!("\nEnter passphrase for private key $HOME/.ssh/id_rsa (or enter for blank)");
+            for line in stdin.lock().lines() {
+                ssh_pass = line.unwrap();
+                *stored_ssh_pass = ssh_pass.clone();
+                break;
+            }
         }
         Cred::ssh_key(
             username_from_url.unwrap(),
@@ -498,7 +508,7 @@ fn check_repo_dirty(repo: &Repository) -> Option<Vec<String>> {
     }
 }
 
-fn run(repo_path: String) -> Upgit {
+fn run(repo_path: String, ssh_pass_arc: SshPass) -> Upgit {
     let mk_upgit = with_path(repo_path.clone());
 
     let repo = match Repository::open(&repo_path) {
@@ -525,7 +535,7 @@ fn run(repo_path: String) -> Upgit {
         _ => {},
     };
 
-    let fetch_commit = match do_fetch(&repo, &[&remote_branch], &mut remote, &remote_branch) {
+    let fetch_commit = match do_fetch(&repo, &[&remote_branch], &mut remote, &remote_branch, ssh_pass_arc) {
         Ok(x) => x,
         Err(err) => return mk_upgit(Outcome::FailedFetch, format!("{:?}", err)),
     };
@@ -672,11 +682,15 @@ fn print_results(upgits: &Vec<Upgit>) {
     });
 }
 
+type SshPass = std::sync::Arc<std::sync::Mutex<String>>;
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let repo_containers = &args[1..];
 
     let mut counter = 0;
+    let ssh_pass_arc: SshPass = Arc::new(Mutex::new(String::from("")));
+
     for rc in repo_containers {
         // 1-8, leaving at least 2 open for other programs
         let num_threads = cmp::min(8, cmp::max(1, num_cpus::get() - 2));
@@ -693,6 +707,7 @@ fn main() {
         for thread_i in 1..(num_threads+1) {
             let rc_clone = rc.clone();
             let tx_clone = mpsc::Sender::clone(&tx);
+            let ssh_pass_arc_clone = Arc::clone(&ssh_pass_arc);
             let child = thread::spawn(move || {
                 let begin = (thread_i - 1) * workload_size;
                 let take = if thread_i == num_threads {
@@ -706,7 +721,7 @@ fn main() {
                         Ok(repo) => {
                             let repo_path = repo.path().display().to_string();
                             if repo.metadata().unwrap().is_dir() {
-                                run(repo_path)
+                                run(repo_path, Arc::clone(&ssh_pass_arc_clone))
                             } else {
                                 Upgit {
                                     path: repo_path,
