@@ -1,10 +1,11 @@
-use git2::Repository;
+use git2::{Repository, Cred};
 use std::str;
 use std::fs;
 use std::env;
 use std::hash::Hash;
 use std::collections::HashMap;
-use std::io::{self, Write};
+use std::io;
+use std::io::prelude::*;
 use std::sync::mpsc;
 use std::thread;
 use std::path::Path;
@@ -14,8 +15,10 @@ use std::cmp;
 // Maybe as a configurable option?
 // E.g. [redox](https://gitlab.com/redox-os.org/redox-os/redox)
 //
-// TODO Need to add a way for authing repos.
-// E.g. to resolve: Error { code: -1, klass: 34, message: "remote authentication required but no callback set" }
+// TODO Ideas for improving authing to repos:
+// * pause threads whenever interactivity is required.
+// * Maintain an in-memory table of already entered passwords for specific domains
+// * Allow user to specify a default username/password as command line flag
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 enum Outcome {
     // #TODO: Should these be consolidated? Does the user care or want to know
@@ -50,7 +53,8 @@ fn do_fetch<'a>(
     remote: &'a mut git2::Remote,
     local_branch_name: &str,
 ) -> Result<git2::AnnotatedCommit<'a>, git2::Error> {
-    // let mut cb = git2::RemoteCallbacks::new();
+    let mut cb = git2::RemoteCallbacks::new();
+
 
     // Print out our transfer progress
     // cb.transfer_progress(|stats| {
@@ -74,7 +78,27 @@ fn do_fetch<'a>(
     // });
 
     let mut fo = git2::FetchOptions::new();
-    // fo.remote_callbacks(cb);
+    cb.credentials(|url, username_from_url, allowed_types| {
+        if allowed_types.is_user_pass_plaintext() {
+            let stdin = io::stdin();
+            let user = username_from_url.unwrap();
+            let mut pass = String::from("");
+            println!("\nEnter password for user \"{}\" for url \"{}\"", user, url);
+            for line in stdin.lock().lines() {
+                pass = line.unwrap();
+                break;
+            }
+            return Cred::userpass_plaintext(user, &pass);
+        }
+        Cred::ssh_key(
+            username_from_url.unwrap(),
+            None,
+            std::path::Path::new(&format!("{}/.ssh/id_rsa", env::var("HOME").unwrap())),
+            None,
+        )
+    });
+
+    fo.remote_callbacks(cb);
     // Always fetch all tags.
     // Perform a download and also update tips
     fo.download_tags(git2::AutotagOption::All);
