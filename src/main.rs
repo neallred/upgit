@@ -11,16 +11,12 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::path::Path;
 use std::cmp;
-use rpassword;
+mod creds;
 
 // TODO Should this attempt to update submodules of repos with submodules?
 // Maybe as a configurable option?
 // E.g. [redox](https://gitlab.com/redox-os.org/redox-os/redox)
-//
-// TODO Ideas for improving authing to repos:
-// * pause threads whenever interactivity is required.
-// * Maintain an in-memory table of already entered passwords for specific domains
-// * Allow user to specify a default username/password as command line flag
+
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 enum Outcome {
     // #TODO: Should these be consolidated? Does the user care or want to know
@@ -42,13 +38,7 @@ enum Outcome {
     WIPOther // For unconsidered errors. This should eventually eliminated
 }
 
-type SharedData = std::sync::Arc<std::sync::Mutex<SharedCreds>>;
-
-#[derive(Debug, Clone)]
-struct SharedCreds {
-    ssh_pass: String,
-    plaintext_pass: String,
-}
+type SharedData = std::sync::Arc<std::sync::Mutex<creds::Storage>>;
 
 #[derive(Debug, Clone)]
 struct Upgit {
@@ -90,17 +80,13 @@ fn do_fetch<'a>(
 
     let mut fo = git2::FetchOptions::new();
     cb.credentials(|url, username_from_url, allowed_types| {
-        
+
         if allowed_types.is_user_pass_plaintext() {
             let user = username_from_url.unwrap();
             let mut shared_data = shared_data.lock().unwrap();
-            let pass: String;
-            if shared_data.plaintext_pass != String::from("") {
-                pass = shared_data.plaintext_pass.clone();
-            } else {
-                pass = rpassword::read_password_from_tty(Some(&format!("\nEnter password for user \"{}\" for url \"{}\":\n\n", user, url))).unwrap();
-                shared_data.plaintext_pass = pass.clone();
-            }
+
+            let pass = shared_data.get_plaintext(user.to_string(), url.to_string());
+
             Cred::userpass_plaintext(user, &pass)
         } else if allowed_types.is_ssh_key() {
             let mut shared_data = shared_data.lock().unwrap();
@@ -208,7 +194,7 @@ fn fast_forward(
     };
     match repo.checkout_head(Some(
         git2::build::CheckoutBuilder::default()
-            // force required to make the working directory actually get updated/ 
+            // force required to make the working directory actually get updated/
             // could add logic to handle dirty working directory states
             .force(),
     )) {
@@ -695,10 +681,7 @@ fn main() {
 
     let mut counter = 0;
 
-    let shared_data: SharedData = Arc::new(Mutex::new(SharedCreds {
-        ssh_pass: String::from(""),
-        plaintext_pass: String::from(""),
-    }));
+    let shared_data: SharedData = Arc::new(Mutex::new(creds::Storage::blank()));
 
     for rc in repo_containers {
         // 1-8, leaving at least 2 open for other programs
@@ -708,11 +691,11 @@ fn main() {
         io::stdout().flush().unwrap();
         let (tx, rx) = mpsc::channel();
 
-        let upgits_vec: Vec<_> = fs::read_dir(rc).unwrap().collect(); 
+        let upgits_vec: Vec<_> = fs::read_dir(rc).unwrap().collect();
         let num_repos = upgits_vec.len();
         let workload_size = num_repos / num_threads;
         let mut children = Vec::new();
-        
+
         for thread_i in 1..(num_threads+1) {
             let rc_clone = rc.clone();
             let tx_clone = mpsc::Sender::clone(&tx);
@@ -721,11 +704,11 @@ fn main() {
             let child = thread::spawn(move || {
                 let begin = (thread_i - 1) * workload_size;
                 let take = if thread_i == num_threads {
-                    num_repos 
+                    num_repos
                 } else {
                     workload_size
                 };
-                let repos: Vec<_> = fs::read_dir(rc_clone).unwrap().skip(begin).take(take).collect(); 
+                let repos: Vec<_> = fs::read_dir(rc_clone).unwrap().skip(begin).take(take).collect();
                 for repo in repos {
                     let upgit = match repo {
                         Ok(repo) => {
@@ -756,9 +739,10 @@ fn main() {
         let mut upgits = vec![];
         for upgit in rx {
             counter += 1;
+            // TODO: Do not output here if arc structure is being read in a thread.
             print!("\rUpgitting {}: {} of {}", rc, counter, num_repos);
             io::stdout().flush().unwrap();
-            upgits.push(upgit); 
+            upgits.push(upgit);
         };
         print_results(&upgits);
     }
