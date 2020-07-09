@@ -42,6 +42,14 @@ enum Outcome {
     WIPOther // For unconsidered errors. This should eventually eliminated
 }
 
+type SharedData = std::sync::Arc<std::sync::Mutex<SharedCreds>>;
+
+#[derive(Debug, Clone)]
+struct SharedCreds {
+    ssh_pass: String,
+    plaintext_pass: String,
+}
+
 #[derive(Debug, Clone)]
 struct Upgit {
     path:   String,
@@ -54,8 +62,7 @@ fn do_fetch<'a>(
     refs: &[&str],
     remote: &'a mut git2::Remote,
     local_branch_name: &str,
-    ssh_pass_arc: SshPass,
-    plaintext_pass_arc: PlaintextPass,
+    shared_data: SharedData,
 ) -> Result<git2::AnnotatedCommit<'a>, git2::Error> {
     let mut cb = git2::RemoteCallbacks::new();
 
@@ -86,24 +93,24 @@ fn do_fetch<'a>(
         
         if allowed_types.is_user_pass_plaintext() {
             let user = username_from_url.unwrap();
-            let mut stored_plaintext_pass  = plaintext_pass_arc.lock().unwrap();
+            let mut shared_data = shared_data.lock().unwrap();
             let pass: String;
-            if *stored_plaintext_pass != String::from("") {
-                pass = stored_plaintext_pass.clone();
+            if shared_data.plaintext_pass != String::from("") {
+                pass = shared_data.plaintext_pass.clone();
             } else {
                 pass = rpassword::read_password_from_tty(Some(&format!("\nEnter password for user \"{}\" for url \"{}\":\n\n", user, url))).unwrap();
-                *stored_plaintext_pass = pass.clone();
+                shared_data.plaintext_pass = pass.clone();
             }
             Cred::userpass_plaintext(user, &pass)
         } else if allowed_types.is_ssh_key() {
-            let mut stored_ssh_pass = ssh_pass_arc.lock().unwrap();
+            let mut shared_data = shared_data.lock().unwrap();
             let ssh_pass: String;
 
-            if *stored_ssh_pass != String::from("") {
-                ssh_pass = stored_ssh_pass.clone();
+            if shared_data.ssh_pass != String::from("") {
+                ssh_pass = shared_data.ssh_pass.clone();
             } else {
                 ssh_pass = rpassword::read_password_from_tty(Some(&format!("\nEnter passphrase for private key $HOME/.ssh/id_rsa (or enter for blank):\n\n"))).unwrap();
-                *stored_ssh_pass = ssh_pass.clone();
+                shared_data.ssh_pass = ssh_pass.clone();
             }
             Cred::ssh_key(
                 username_from_url.unwrap(),
@@ -508,7 +515,7 @@ fn check_repo_dirty(repo: &Repository) -> Option<Vec<String>> {
     }
 }
 
-fn run(repo_path: String, ssh_pass_arc: SshPass, plaintext_pass_arc: PlaintextPass) -> Upgit {
+fn run(repo_path: String, shared_data: SharedData) -> Upgit {
     let mk_upgit = with_path(repo_path.clone());
 
     let repo = match Repository::open(&repo_path) {
@@ -535,7 +542,7 @@ fn run(repo_path: String, ssh_pass_arc: SshPass, plaintext_pass_arc: PlaintextPa
         _ => {},
     };
 
-    let fetch_commit = match do_fetch(&repo, &[&remote_branch], &mut remote, &remote_branch, ssh_pass_arc, plaintext_pass_arc) {
+    let fetch_commit = match do_fetch(&repo, &[&remote_branch], &mut remote, &remote_branch, shared_data) {
         Ok(x) => x,
         Err(err) => return mk_upgit(Outcome::FailedFetch, format!("{:?}", err)),
     };
@@ -682,16 +689,16 @@ fn print_results(upgits: &Vec<Upgit>) {
     });
 }
 
-type SshPass = std::sync::Arc<std::sync::Mutex<String>>;
-type PlaintextPass = std::sync::Arc<std::sync::Mutex<String>>;
-
 fn main() {
     let args: Vec<String> = env::args().collect();
     let repo_containers = &args[1..];
 
     let mut counter = 0;
-    let ssh_pass_arc: SshPass = Arc::new(Mutex::new(String::from("")));
-    let plaintext_pass_arc: PlaintextPass = Arc::new(Mutex::new(String::from("")));
+
+    let shared_data: SharedData = Arc::new(Mutex::new(SharedCreds {
+        ssh_pass: String::from(""),
+        plaintext_pass: String::from(""),
+    }));
 
     for rc in repo_containers {
         // 1-8, leaving at least 2 open for other programs
@@ -709,8 +716,7 @@ fn main() {
         for thread_i in 1..(num_threads+1) {
             let rc_clone = rc.clone();
             let tx_clone = mpsc::Sender::clone(&tx);
-            let ssh_pass_arc_clone = Arc::clone(&ssh_pass_arc);
-            let plaintext_pass_arc_clone = Arc::clone(&plaintext_pass_arc);
+            let shared_data_clone = Arc::clone(&shared_data);
 
             let child = thread::spawn(move || {
                 let begin = (thread_i - 1) * workload_size;
@@ -725,7 +731,7 @@ fn main() {
                         Ok(repo) => {
                             let repo_path = repo.path().display().to_string();
                             if repo.metadata().unwrap().is_dir() {
-                                run(repo_path, Arc::clone(&ssh_pass_arc_clone), Arc::clone(&plaintext_pass_arc_clone))
+                                run(repo_path, Arc::clone(&shared_data_clone))
                             } else {
                                 Upgit {
                                     path: repo_path,
