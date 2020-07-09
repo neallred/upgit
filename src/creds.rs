@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct Storage {
-    pub ssh_pass: String,
+    default_ssh_passphrase: String,
     default_plaintext: String,
     tries_plaintext: HashMap<String, (String, u32)>
 }
@@ -17,20 +17,22 @@ pub struct Storage {
 impl Storage {
     pub fn blank() -> Storage {
         Storage {
-            ssh_pass: String::from(""),
+            default_ssh_passphrase: String::from(""),
             default_plaintext: String::from(""),
             tries_plaintext: HashMap::new(),
         }
     }
 
+    pub fn get_ssh_passphrase(&mut self) -> String {
+        if self.default_ssh_passphrase == String::from("") {
+            self.default_ssh_passphrase = rpassword::read_password_from_tty(Some(&format!("\nEnter passphrase for private key $HOME/.ssh/id_rsa (or enter for blank):\n"))).unwrap();
+        }
+        self.default_ssh_passphrase.clone()
+    }
+
     pub fn get_plaintext(&mut self, user: String, url: String) -> String {
-        // TODO
-        let pass: String;
-        if self.default_plaintext != String::from("") {
-            return self.default_plaintext.clone();
-        } else {
-            pass = rpassword::read_password_from_tty(Some(&format!("\nEnter password for user \"{}\" for url \"{}\":\n\n", user, url))).unwrap();
-            self.default_plaintext = pass.clone();
+        if self.default_plaintext == String::from("") {
+            self.default_plaintext = rpassword::read_password_from_tty(Some(&format!("\nEnter password for user \"{}\" for url \"{}\":\n", user, url))).unwrap();
         }
 
         self.default_plaintext.clone()

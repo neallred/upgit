@@ -56,53 +56,22 @@ fn do_fetch<'a>(
 ) -> Result<git2::AnnotatedCommit<'a>, git2::Error> {
     let mut cb = git2::RemoteCallbacks::new();
 
-
-    // Print out our transfer progress
-    // cb.transfer_progress(|stats| {
-    //     if stats.received_objects() == stats.total_objects() {
-    //         print!(
-    //             "Resolving deltas{}/{}\r",
-    //             stats.indexed_deltas(),
-    //             stats.total_deltas()
-    //         );
-    //     } else if stats.total_objects() > 0 {
-    //         print!(
-    //             "Received {}/{} objects ({}) in {} bytes\r",
-    //             stats.received_objects(),
-    //             stats.total_objects(),
-    //             stats.indexed_objects(),
-    //             stats.received_bytes(),
-    //         );
-    //     }
-    //     io::stdout().flush().unwrap();
-    //     true
-    // });
-
     let mut fo = git2::FetchOptions::new();
     cb.credentials(|url, username_from_url, allowed_types| {
 
         if allowed_types.is_user_pass_plaintext() {
             let user = username_from_url.unwrap();
             let mut shared_data = shared_data.lock().unwrap();
-
             let pass = shared_data.get_plaintext(user.to_string(), url.to_string());
-
             Cred::userpass_plaintext(user, &pass)
         } else if allowed_types.is_ssh_key() {
             let mut shared_data = shared_data.lock().unwrap();
-            let ssh_pass: String;
-
-            if shared_data.ssh_pass != String::from("") {
-                ssh_pass = shared_data.ssh_pass.clone();
-            } else {
-                ssh_pass = rpassword::read_password_from_tty(Some(&format!("\nEnter passphrase for private key $HOME/.ssh/id_rsa (or enter for blank):\n\n"))).unwrap();
-                shared_data.ssh_pass = ssh_pass.clone();
-            }
+            let pass = shared_data.get_ssh_passphrase();
             Cred::ssh_key(
                 username_from_url.unwrap(),
                 Some(std::path::Path::new(&format!("{}/.ssh/id_rsa.pub", env::var("HOME").unwrap()))),
                 std::path::Path::new(&format!("{}/.ssh/id_rsa", env::var("HOME").unwrap())),
-                if ssh_pass == String::from("") { None } else { Some(&ssh_pass) },
+                if pass == String::from("") { None } else { Some(&pass) },
             )
         } else {
             Err(git2::Error::from_str("Unable to select a credential type, only plaintext or ssh key are supported at this time."))
@@ -739,9 +708,12 @@ fn main() {
         let mut upgits = vec![];
         for upgit in rx {
             counter += 1;
-            // TODO: Do not output here if arc structure is being read in a thread.
-            print!("\rUpgitting {}: {} of {}", rc, counter, num_repos);
-            io::stdout().flush().unwrap();
+            // Do not output here if arc structure is being interacted with,
+            // as it might mean user is being promted for input.
+            if let Ok(_) = shared_data.try_lock() {
+                print!("\rUpgitting {}: {} of {}", rc, counter, num_repos);
+                io::stdout().flush().unwrap();
+            }
             upgits.push(upgit);
         };
         print_results(&upgits);
