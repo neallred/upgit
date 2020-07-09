@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::path::Path;
 use std::cmp;
+use rpassword;
 
 // TODO Should this attempt to update submodules of repos with submodules?
 // Maybe as a configurable option?
@@ -54,6 +55,7 @@ fn do_fetch<'a>(
     remote: &'a mut git2::Remote,
     local_branch_name: &str,
     ssh_pass_arc: SshPass,
+    plaintext_pass_arc: PlaintextPass,
 ) -> Result<git2::AnnotatedCommit<'a>, git2::Error> {
     let mut cb = git2::RemoteCallbacks::new();
 
@@ -81,39 +83,37 @@ fn do_fetch<'a>(
 
     let mut fo = git2::FetchOptions::new();
     cb.credentials(|url, username_from_url, allowed_types| {
+        
         if allowed_types.is_user_pass_plaintext() {
-            let stdin = io::stdin();
             let user = username_from_url.unwrap();
-            let mut pass = String::from("");
-            println!("\nEnter password for user \"{}\" for url \"{}\"", user, url);
-            for line in stdin.lock().lines() {
-                pass = line.unwrap();
-                break;
+            let mut stored_plaintext_pass  = plaintext_pass_arc.lock().unwrap();
+            let pass: String;
+            if *stored_plaintext_pass != String::from("") {
+                pass = stored_plaintext_pass.clone();
+            } else {
+                pass = rpassword::read_password_from_tty(Some(&format!("\nEnter password for user \"{}\" for url \"{}\":\n\n", user, url))).unwrap();
+                *stored_plaintext_pass = pass.clone();
             }
-            return Cred::userpass_plaintext(user, &pass);
-        }
+            Cred::userpass_plaintext(user, &pass)
+        } else if allowed_types.is_ssh_key() {
+            let mut stored_ssh_pass = ssh_pass_arc.lock().unwrap();
+            let ssh_pass: String;
 
-        let stdin = io::stdin();
-
-        let mut stored_ssh_pass = ssh_pass_arc.lock().unwrap();
-        let mut ssh_pass = String::from("");
-
-        if *stored_ssh_pass != String::from("") {
-            ssh_pass = stored_ssh_pass.clone();
-        } else {
-            println!("\nEnter passphrase for private key $HOME/.ssh/id_rsa (or enter for blank)");
-            for line in stdin.lock().lines() {
-                ssh_pass = line.unwrap();
+            if *stored_ssh_pass != String::from("") {
+                ssh_pass = stored_ssh_pass.clone();
+            } else {
+                ssh_pass = rpassword::read_password_from_tty(Some(&format!("\nEnter passphrase for private key $HOME/.ssh/id_rsa (or enter for blank):\n\n"))).unwrap();
                 *stored_ssh_pass = ssh_pass.clone();
-                break;
             }
+            Cred::ssh_key(
+                username_from_url.unwrap(),
+                Some(std::path::Path::new(&format!("{}/.ssh/id_rsa.pub", env::var("HOME").unwrap()))),
+                std::path::Path::new(&format!("{}/.ssh/id_rsa", env::var("HOME").unwrap())),
+                if ssh_pass == String::from("") { None } else { Some(&ssh_pass) },
+            )
+        } else {
+            Err(git2::Error::from_str("Unable to select a credential type, only plaintext or ssh key are supported at this time."))
         }
-        Cred::ssh_key(
-            username_from_url.unwrap(),
-            Some(std::path::Path::new(&format!("{}/.ssh/id_rsa.pub", env::var("HOME").unwrap()))),
-            std::path::Path::new(&format!("{}/.ssh/id_rsa", env::var("HOME").unwrap())),
-            if ssh_pass == String::from("") { None } else { Some(&ssh_pass) },
-        )
     });
 
     fo.remote_callbacks(cb);
@@ -508,7 +508,7 @@ fn check_repo_dirty(repo: &Repository) -> Option<Vec<String>> {
     }
 }
 
-fn run(repo_path: String, ssh_pass_arc: SshPass) -> Upgit {
+fn run(repo_path: String, ssh_pass_arc: SshPass, plaintext_pass_arc: PlaintextPass) -> Upgit {
     let mk_upgit = with_path(repo_path.clone());
 
     let repo = match Repository::open(&repo_path) {
@@ -535,7 +535,7 @@ fn run(repo_path: String, ssh_pass_arc: SshPass) -> Upgit {
         _ => {},
     };
 
-    let fetch_commit = match do_fetch(&repo, &[&remote_branch], &mut remote, &remote_branch, ssh_pass_arc) {
+    let fetch_commit = match do_fetch(&repo, &[&remote_branch], &mut remote, &remote_branch, ssh_pass_arc, plaintext_pass_arc) {
         Ok(x) => x,
         Err(err) => return mk_upgit(Outcome::FailedFetch, format!("{:?}", err)),
     };
@@ -683,6 +683,7 @@ fn print_results(upgits: &Vec<Upgit>) {
 }
 
 type SshPass = std::sync::Arc<std::sync::Mutex<String>>;
+type PlaintextPass = std::sync::Arc<std::sync::Mutex<String>>;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -690,6 +691,7 @@ fn main() {
 
     let mut counter = 0;
     let ssh_pass_arc: SshPass = Arc::new(Mutex::new(String::from("")));
+    let plaintext_pass_arc: PlaintextPass = Arc::new(Mutex::new(String::from("")));
 
     for rc in repo_containers {
         // 1-8, leaving at least 2 open for other programs
@@ -708,6 +710,8 @@ fn main() {
             let rc_clone = rc.clone();
             let tx_clone = mpsc::Sender::clone(&tx);
             let ssh_pass_arc_clone = Arc::clone(&ssh_pass_arc);
+            let plaintext_pass_arc_clone = Arc::clone(&plaintext_pass_arc);
+
             let child = thread::spawn(move || {
                 let begin = (thread_i - 1) * workload_size;
                 let take = if thread_i == num_threads {
@@ -721,7 +725,7 @@ fn main() {
                         Ok(repo) => {
                             let repo_path = repo.path().display().to_string();
                             if repo.metadata().unwrap().is_dir() {
-                                run(repo_path, Arc::clone(&ssh_pass_arc_clone))
+                                run(repo_path, Arc::clone(&ssh_pass_arc_clone), Arc::clone(&plaintext_pass_arc_clone))
                             } else {
                                 Upgit {
                                     path: repo_path,

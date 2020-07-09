@@ -9,3 +9,4 @@ edition = "2018"
 [dependencies]
 git2 = "0.13.6"
 num_cpus = "1.13.0"
+rpassword = "4.0"
