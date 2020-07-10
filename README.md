@@ -1,8 +1,23 @@
 # upgit
 
-Command line tool for bringing git repos up to date and listing their status. Think `find . -mindepth 1 -maxdepth 1 -type d -exec git -C pull \;`, but parallel.
+Command line tool for bringing git repos up to date, quickly.
 
 Inspired by countless minutes lost repeating `cd <some-repo-path> && git pull` for countless repos. Credit to https://gabac.blog/posts/git-pull-many-repos-at-once/ for the shell script one-liner.
+
+## Prerequisites
+
+A working [`cargo`](https://doc.rust-lang.org/cargo) install. They can both be installed by following the instructions on [rustup.rs](https://rustup.rs).
+
+## Usage
+
+### Authentication
+
+Currently, `upgit` supports basic credential and ssh auth methods. It is work in progress and will likely change significantly. The user is not prompted for auth unless the specific repo requests it.
+
+The ssh method naively assumes the private key is at $HOME/.ssh/id_rsa. It allows entering a blank ssh passphrase if there is no passphrase on the key. It accepts the password and does not allow different keys to be used per repo.
+
+The plain text method assumes the last password entered is the one that should be used for unseen URLs. Because of how threading is currently implemented, entering a wrong password means a LOT of password re-entry. To mitigate this, plain text password entry prompts for password confirmation.
+
 
 ## Running
 
@@ -14,7 +29,9 @@ cargo run <relative path(s) to repo container folder(s)>
 
 For example, if I stored all my repos in ~/github, `cargo run ~/github`
 
-## building
+## Building
+
+From the repo root, run
 
 ```
 cargo build --release
