@@ -196,15 +196,6 @@ fn normal_merge(
         ),
     };
 
-    // match repo.graph_descendant_of(remote.id(), local.id()) {
-    //     Ok(is_ancestor) => {
-    //         println!("remote is ancestor: {}", is_ancestor);
-    //     },
-    //     Err(err) => {
-    //         println!("{:?}", err);
-    //     },
-    // };
-
     let merge_base_commit = match repo.merge_base(local.id(), remote.id()) {
         Ok(x) => x,
         Err(err) => return mk_upgit_other(
@@ -596,7 +587,7 @@ fn print_results(upgits: &Vec<Upgit>) {
     });
 
     groups.get(&Outcome::Dirty).and_then(|upgits| -> Option<()> {
-        println!("Dirty, unable to update ({}):", upgits.len());
+        println!("Dirty, skipped ({}):", upgits.len());
         for u in upgits {
             println!("  {}", u.path);
             println!("    {}", u.report);
