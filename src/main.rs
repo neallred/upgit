@@ -8,9 +8,11 @@ use std::io;
 use std::io::prelude::*;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::path::Path;
 use std::cmp;
+use tokio;
+use tokio::task;
+// use tokio::stream::{self, StreamExt};
 mod creds;
 
 // TODO Should this attempt to update submodules of repos with submodules?
@@ -23,7 +25,6 @@ enum Outcome {
     // all the different failures and their reasons?
     NotARepo,
     NoRemotes,
-    BadFsEntry,
     Dirty,
     RemoteHeadMismatch,
     UpToDate,
@@ -488,6 +489,8 @@ fn run(repo_path: String, shared_data: SharedData) -> Upgit {
         _ => {},
     };
 
+    // Up to here, no network calls are made
+    // mk_upgit(Outcome::WIPOther, format!("asdf asdf asdf asdf"))
     let fetch_commit = match do_fetch(&repo, &[&remote_branch], &mut remote, &remote_branch, shared_data) {
         Ok(x) => x,
         Err(err) => return mk_upgit(Outcome::FailedFetch, format!("{:?}", err)),
@@ -541,14 +544,6 @@ fn print_results(upgits: &Vec<Upgit>) {
 
     groups.get(&Outcome::BareRepository).and_then(|upgits| -> Option<()> {
         println!("Bare repository, not updating ({}):", upgits.len());
-        None
-    });
-
-    groups.get(&Outcome::BadFsEntry).and_then(|upgits| -> Option<()> {
-        println!("Bad filesystem ({}):", upgits.len());
-        for u in upgits {
-            println!("  {}", u.report);
-        };
         None
     });
 
@@ -635,62 +630,54 @@ fn print_results(upgits: &Vec<Upgit>) {
     });
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args: Vec<String> = env::args().collect();
     let repo_containers = &args[1..];
-
-    let mut counter = 0;
 
     let shared_data: SharedData = Arc::new(Mutex::new(creds::Storage::blank()));
 
     for rc in repo_containers {
-        // 1-8, leaving at least 2 open for other programs
-        let num_threads = cmp::min(8, cmp::max(1, num_cpus::get() - 2));
+        let mut counter = 0;
 
         print!("Upgitting {}:", rc);
         io::stdout().flush().unwrap();
         let (tx, rx) = mpsc::channel();
 
-        let upgits_vec: Vec<_> = fs::read_dir(rc).unwrap().collect();
-        let num_repos = upgits_vec.len();
-        let workload_size = num_repos / num_threads;
+        let (non_repo_upgits, repos) = fs::read_dir(rc).unwrap().fold((Vec::new(), Vec::new()), |(mut upgits, mut repos), fs_entry| {
+            match fs_entry {
+                Ok(repo) => {
+                    let repo_path = repo.path().display().to_string();
+                    if repo.metadata().unwrap().is_dir() {
+                        repos.push(repo_path);
+                    } else {
+                        upgits.push(Upgit {
+                            path: repo_path,
+                            outcome: Outcome::NotARepo,
+                            report: String::from(""),
+                        });
+                    }
+                },
+                Err(err) => {
+                    upgits.push(Upgit {
+                        path: String::from("Unknown fs entity"),
+                        outcome: Outcome::NotARepo,
+                        report: format!("{:?}", err),
+                    });
+                }
+            };
+            (upgits, repos)
+        });
+        let num_repos = repos.len();
         let mut children = Vec::new();
 
-        for thread_i in 1..(num_threads+1) {
-            let rc_clone = rc.clone();
+        for r in repos {
             let tx_clone = mpsc::Sender::clone(&tx);
             let shared_data_clone = Arc::clone(&shared_data);
 
-            let child = thread::spawn(move || {
-                let begin = (thread_i - 1) * workload_size;
-                let take = if thread_i == num_threads {
-                    num_repos
-                } else {
-                    workload_size
-                };
-                let repos: Vec<_> = fs::read_dir(rc_clone).unwrap().skip(begin).take(take).collect();
-                for repo in repos {
-                    let upgit = match repo {
-                        Ok(repo) => {
-                            let repo_path = repo.path().display().to_string();
-                            if repo.metadata().unwrap().is_dir() {
-                                run(repo_path, Arc::clone(&shared_data_clone))
-                            } else {
-                                Upgit {
-                                    path: repo_path,
-                                    outcome: Outcome::NotARepo,
-                                    report: String::from(""),
-                                }
-                            }
-                        },
-                        Err(err) => Upgit {
-                            path: String::from(""),
-                            outcome: Outcome::BadFsEntry,
-                            report: format!("{:?}", err),
-                        }
-                    };
-                    tx_clone.send(upgit).unwrap();
-                }
+            let child = tokio::spawn(async move {
+                let upgit = run(r, Arc::clone(&shared_data_clone));
+                tx_clone.send(upgit).unwrap();
             });
             children.push(child);
         }
@@ -707,6 +694,8 @@ fn main() {
             }
             upgits.push(upgit);
         };
+        print_results(&non_repo_upgits);
         print_results(&upgits);
     }
 }
+// task spawn
