@@ -503,7 +503,7 @@ fn report_path(upgits: &Vec<Upgit>, label: &str) -> Option<()> {
         None
 }
 fn report_count(upgits: &Vec<Upgit>, label: &str) -> Option<()> {
-        println!("{} ({}):", label, upgits.len());
+        println!("{} ({})", label, upgits.len());
         None
 }
 
