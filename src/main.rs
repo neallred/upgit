@@ -9,10 +9,7 @@ use std::io::prelude::*;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::path::Path;
-use std::cmp;
 use tokio;
-use tokio::task;
-// use tokio::stream::{self, StreamExt};
 mod creds;
 
 // TODO Should this attempt to update submodules of repos with submodules?
@@ -150,18 +147,14 @@ fn fast_forward(
     };
     let msg = format!("Fast-Forward: Setting {} to id: {}", name, rc.id());
 
-    match lb.set_target(rc.id(), &msg) {
-        Err(err) => return mk_upgit_other(
+    if let Err(err) = lb.set_target(rc.id(), &msg) {
+        return mk_upgit_other(
             format!("Unable to create a reference with the same name as the given reference\n    {}", err),
-        ),
-        _ => {},
+        )
     };
-    match repo.set_head(&name) {
-        Err(err) => return mk_upgit_other(
-            format!("Unable to set head:\n    {}", err),
-        ),
-        _ => {},
-    };
+    if let Err(err) = repo.set_head(&name) {
+         return mk_upgit_other(format!("Unable to set head:\n    {}", err))
+    }
     match repo.checkout_head(Some(
         git2::build::CheckoutBuilder::default()
             // force required to make the working directory actually get updated/
@@ -184,23 +177,25 @@ fn normal_merge(
 ) -> Upgit {
     let mk_upgit = with_path(repo_path.clone());
     let mk_upgit_other = with_path_other(repo_path.clone());
-    let local_tree = match repo.find_commit(local.id()).and_then(|x| { x.tree() }) {
+    let local_id = local.id();
+    let remote_id = remote.id();
+    let local_tree = match repo.find_commit(local_id).and_then(|x| { x.tree() }) {
         Ok(x) => x,
         Err(err) => return mk_upgit_other(
             format!("could not find local commit\n    {}", err),
         ),
     };
-    let remote_tree = match repo.find_commit(remote.id()).and_then(|x| x.tree()) {
+    let remote_tree = match repo.find_commit(remote_id).and_then(|x| x.tree()) {
         Ok(x) => x,
         Err(err) => return mk_upgit_other(
             format!("could not find remote commit\n    {}", err),
         ),
     };
 
-    let merge_base_commit = match repo.merge_base(local.id(), remote.id()) {
+    let merge_base_commit = match repo.merge_base(local_id, remote_id) {
         Ok(x) => x,
         Err(err) => return mk_upgit_other(
-            format!("No merge base local {} and remote {}\n    {}", local.id(), remote.id(), err),
+            format!("No merge base local {} and remote {}\n    {}", local_id, remote_id, err),
         ),
     };
     let ancestor = match repo.find_commit(merge_base_commit).and_then(|x| { x.tree() }) {
@@ -255,7 +250,7 @@ fn normal_merge(
         )
     };
     // do our merge commit and set current branch head to that commit.
-    let _merge_commit = match repo.commit(
+    if let Err(err) = repo.commit(
         Some("HEAD"),
         &sig,
         &sig,
@@ -263,10 +258,7 @@ fn normal_merge(
         &result_tree,
         &[&local_commit, &remote_commit],
     ) {
-        Err(err) => return mk_upgit_other(
-            format!("Unable to make commit\n    {}", err),
-        ),
-        _ => {},
+        return mk_upgit_other(format!("Unable to make commit\n    {}", err))
     };
 
     // Set working tree to match head.
@@ -301,30 +293,24 @@ fn do_merge<'a>(
                 // The branch doesn't exist so just set the reference to the
                 // commit directly. Usually this is because you are
                 // pulling into an empty repository.
-                match repo.reference(
-                    &refname,
-                    fetch_commit.id(),
-                    true,
-                    &format!("Setting {} to {}", remote_branch, fetch_commit.id()),
-                ) {
-                    Err(err) => return mk_upgit_other(
-                        format!("Unable to create reference \"{}\". Does it already exist?\n    {}", refname, err),
-                    ),
-                    _ => {},
+                let set_ref_msg = format!("Setting {} to {}", remote_branch, fetch_commit.id());
+                if let Err(err) = repo.reference(&refname, fetch_commit.id(), true, &set_ref_msg) {
+                    return mk_upgit_other(
+                        format!("Can't create ref \"{}\". Does it already exist?\n    {}", refname, err)
+                    )
                 };
 
-                match repo.set_head(&refname) {
-                    Err(err) => return mk_upgit_other(format!("Unable to set head\n    {}", err)),
-                    _ => {},
+                if let Err(err) = repo.set_head(&refname) {
+                    return mk_upgit_other(format!("Unable to set head\n    {}", err))
                 };
-                match repo.checkout_head(Some(
+                return match repo.checkout_head(Some(
                         git2::build::CheckoutBuilder::default()
                             .allow_conflicts(true)
                             .conflict_style_merge(true)
                             .force(),
                 )) {
-                    Err(err) => return mk_upgit_other(format!("Unable to set head\n    {}", err)),
-                    Ok(_) => return mk_upgit(Outcome::Updated, format!("")),
+                    Err(err) => mk_upgit_other(format!("Unable to set head\n    {}", err)),
+                    Ok(_) => mk_upgit(Outcome::Updated, format!("")),
                 };
             }
         }
@@ -411,45 +397,35 @@ fn check_repo_dirty(repo: &Repository) -> Option<Vec<String>> {
     let mut dirty_things = vec![];
     let result_statuses = repo.statuses(None);
     match result_statuses {
-        Ok(statuses) => {
-            for status_entry in statuses.iter() {
-                let status = status_entry.status();
-                let path = status_entry.path().unwrap_or("");
-                if status.is_index_new() {
-                    dirty_things.push(format!("idx +: {}", path));
-                }
-                if status.is_index_modified() {
-                    dirty_things.push(format!("idx Δ: {}", path));
-                }
-                if status.is_index_deleted() {
-                    dirty_things.push(format!("idx -: {}", path));
-                }
-                if status.is_index_renamed() {
-                    dirty_things.push(format!("idx ->: {}", path));
-                }
-                if status.is_index_typechange() {
-                    dirty_things.push(format!("idx Δtype: {}", path));
-                }
+        Ok(statuses) => for status_entry in statuses.iter() {
+            let status = status_entry.status();
+            let path = status_entry.path().unwrap_or("");
+            if status.is_index_new() {
+                dirty_things.push(format!("idx +: {}", path));
+            } else if status.is_index_modified() {
+                dirty_things.push(format!("idx Δ: {}", path));
+            } else if status.is_index_deleted() {
+                dirty_things.push(format!("idx -: {}", path));
+            } else if status.is_index_renamed() {
+                dirty_things.push(format!("idx ->: {}", path));
+            } else if status.is_index_typechange() {
+                dirty_things.push(format!("idx Δtype: {}", path));
+            }
 
-                if status.is_wt_new() {
-                    dirty_things.push(format!("wt +: {}", path));
-                }
-                if status.is_wt_modified() {
-                    dirty_things.push(format!("wt Δ: {}", path));
-                }
-                if status.is_wt_deleted() {
-                    dirty_things.push(format!("wt -: {}", path));
-                }
-                if status.is_wt_renamed() {
-                    dirty_things.push(format!("wt ->: {}", path));
-                }
-                if status.is_wt_typechange() {
-                    dirty_things.push(format!("wt Δtype: {}", path));
-                }
+            if status.is_wt_new() {
+                dirty_things.push(format!("wt +: {}", path));
+            } else if status.is_wt_modified() {
+                dirty_things.push(format!("wt Δ: {}", path));
+            } else if status.is_wt_deleted() {
+                dirty_things.push(format!("wt -: {}", path));
+            } else if status.is_wt_renamed() {
+                dirty_things.push(format!("wt ->: {}", path));
+            } else if status.is_wt_typechange() {
+                dirty_things.push(format!("wt Δtype: {}", path));
+            }
 
-                if status.is_conflicted() {
-                    dirty_things.push(format!("conflict: {}", path));
-                }
+            if status.is_conflicted() {
+                dirty_things.push(format!("conflict: {}", path));
             }
         },
         Err(err) => dirty_things.push(format!("statuses err: {}", err)),
@@ -464,6 +440,7 @@ fn check_repo_dirty(repo: &Repository) -> Option<Vec<String>> {
 
 fn run(repo_path: String, shared_data: SharedData) -> Upgit {
     let mk_upgit = with_path(repo_path.clone());
+    let mk_upgit_other = with_path_other(repo_path.clone());
 
     let repo = match Repository::open(&repo_path) {
         Ok(r) => r,
@@ -473,24 +450,21 @@ fn run(repo_path: String, shared_data: SharedData) -> Upgit {
         Ok(the_head) => {
             match the_head.shorthand() {
                 Some(x) => String::from(x),
-                None => return mk_upgit(Outcome::WIPOther, format!("not able to get local head branch name")),
+                None => return mk_upgit_other(format!("Can't get local head name")),
             }
         },
-        Err(err) => return mk_upgit(Outcome::WIPOther, format!("not able to get local head branch name, {}", err)),
+        Err(err) => return mk_upgit_other(format!("Can't get local head name, {}", err)),
     };
     let mut remote = match get_origin_remote(&repo, repo_path.clone()) {
         Ok(r) => r,
         Err(upgit) => return upgit,
     };
 
-    let dirty_status = check_repo_dirty(&repo);
-    match dirty_status {
-        Some(statuses) => return mk_upgit(Outcome::Dirty, statuses.join("\n    ")),
-        _ => {},
+    if let Some(statuses) = check_repo_dirty(&repo) {
+         return mk_upgit(Outcome::Dirty, statuses.join("\n    "))
     };
 
     // Up to here, no network calls are made
-    // mk_upgit(Outcome::WIPOther, format!("asdf asdf asdf asdf"))
     let fetch_commit = match do_fetch(&repo, &[&remote_branch], &mut remote, &remote_branch, shared_data) {
         Ok(x) => x,
         Err(err) => return mk_upgit(Outcome::FailedFetch, format!("{:?}", err)),
@@ -500,131 +474,58 @@ fn run(repo_path: String, shared_data: SharedData) -> Upgit {
 
 fn group_upgits(upgits: Vec<Upgit>) -> HashMap<Outcome, Vec<Upgit>> {
     let mut grouped: HashMap<Outcome, Vec<Upgit>> = HashMap::new();
-    upgits.into_iter().fold(&mut grouped, move |grouped, u| {
-        match grouped.get_mut(&u.outcome) {
+    upgits.into_iter().fold(&mut grouped, move |acc, u| {
+        match acc.get_mut(&u.outcome) {
             Some(mutable_group) => {
                 mutable_group.push(u);
             },
             None => {
-                let _ = grouped.insert(u.outcome.clone(), vec![u]);
+                let _ = acc.insert(u.outcome.clone(), vec![u]);
             },
         };
-        grouped
+        acc
     });
     grouped
 }
 
+fn print_upgits(upgits: &Vec<Upgit>, label: &str) -> Option<()> {
+        println!("{} ({}):", label, upgits.len());
+        for u in upgits {
+            println!("  {}\n    {}", u.path, u.report);
+        };
+        None
+}
+fn report_path(upgits: &Vec<Upgit>, label: &str) -> Option<()> {
+        println!("{} ({}):", label, upgits.len());
+        for u in upgits {
+            println!("  {}", u.path);
+        };
+        None
+}
+fn report_count(upgits: &Vec<Upgit>, label: &str) -> Option<()> {
+        println!("{} ({}):", label, upgits.len());
+        None
+}
+
 fn print_results(upgits: &Vec<Upgit>) {
     let groups = group_upgits(upgits.clone());
-    println!("processed {} repos", upgits.len());
-    groups.get(&Outcome::NotARepo).and_then(|upgits| -> Option<()> {
-        println!("Not a repo ({}):", upgits.len());
-        for u in upgits {
-            println!("  {}", u.path);
-        };
-        None
-    });
-
-    groups.get(&Outcome::NoRemotes).and_then(|upgits| -> Option<()> {
-        println!("No remote ({}):", upgits.len());
-        for u in upgits {
-            println!("  {}", u.path);
-        };
-        None
-    });
-
-    groups.get(&Outcome::NoClearOrigin).and_then(|upgits| -> Option<()> {
-        println!("No clear remote origin ({}):", upgits.len());
-        for u in upgits {
-            println!("  {}", u.path);
-            println!("{}", u.report);
-        };
-        None
-    });
-
-    groups.get(&Outcome::BareRepository).and_then(|upgits| -> Option<()> {
-        println!("Bare repository, not updating ({}):", upgits.len());
-        None
-    });
-
-    groups.get(&Outcome::RemoteHeadMismatch).and_then(|upgits| -> Option<()> {
-        println!("Remote head mismatch ({}):", upgits.len());
-        for u in upgits {
-            println!("  {}", u.path);
-        };
-        None
-    });
-
-    groups.get(&Outcome::UpToDate).and_then(|upgits| -> Option<()> {
-        println!("Up to date ({}):", upgits.len());
-        None
-    });
-
-    groups.get(&Outcome::FailedMergeAnalysis).and_then(|upgits| -> Option<()> {
-        println!("Failed merge analysis ({}):", upgits.len());
-        None
-    });
-
-    groups.get(&Outcome::RevertedConflict).and_then(|upgits| -> Option<()> {
-        println!("Reverted conflict ({}):", upgits.len());
-        for u in upgits {
-            println!("  {}", u.path);
-        };
-        None
-    });
-
-    groups.get(&Outcome::UnresolvedConflict).and_then(|upgits| -> Option<()> {
-        println!("Unresolved conflict ({}):", upgits.len());
-        for u in upgits {
-            println!("  {}", u.path);
-        };
-        None
-    });
-
-    groups.get(&Outcome::Dirty).and_then(|upgits| -> Option<()> {
-        println!("Dirty, skipped ({}):", upgits.len());
-        for u in upgits {
-            println!("  {}", u.path);
-            println!("    {}", u.report);
-        };
-        None
-    });
-
-    groups.get(&Outcome::FailedFetch).and_then(|upgits| -> Option<()> {
-        println!("Failed to fetch ({}):", upgits.len());
-        for u in upgits {
-            println!("  {}", u.path);
-            println!("    {}", u.report);
-        };
-        None
-    });
-
-    groups.get(&Outcome::NeedsResolution).and_then(|upgits| -> Option<()> {
-        println!("Needs resolution ({}):", upgits.len());
-        for u in upgits {
-            println!("  {}", u.path);
-            println!("    {}", u.report);
-        };
-        None
-    });
-
-    groups.get(&Outcome::WIPOther).and_then(|upgits| -> Option<()> {
-        println!("Other error outcome ({}):", upgits.len());
-        for u in upgits {
-            println!("  {}", u.path);
-            println!("    {}", u.report);
-        };
-        None
-    });
-
+    groups.get(&Outcome::NotARepo).and_then(|x| report_path(x, "Not a repo"));
+    groups.get(&Outcome::NoRemotes).and_then(|x| report_path(x, "No remote"));
+    groups.get(&Outcome::NoClearOrigin).and_then(|x| print_upgits(x, "No clear remote origin"));
+    groups.get(&Outcome::BareRepository).and_then(|x| report_count(x, "Bare repo, skipped"));
+    groups.get(&Outcome::RemoteHeadMismatch).and_then(|x| report_path(x, "Remote head mismatch"));
+    groups.get(&Outcome::UpToDate).and_then(|x| report_count(x, "Up to date"));
+    groups.get(&Outcome::FailedMergeAnalysis).and_then(|x| report_count(x, "Failed merge analysis"));
+    groups.get(&Outcome::RevertedConflict).and_then(|x| print_upgits(x, "Reverted conflict"));
+    groups.get(&Outcome::UnresolvedConflict).and_then(|x| print_upgits(x, "Unresolved conflict"));
+    groups.get(&Outcome::Dirty).and_then(|x| print_upgits(x, "Dirty, skipped"));
+    groups.get(&Outcome::FailedFetch).and_then(|x| print_upgits(x, "Couldn't fetch"));
+    groups.get(&Outcome::NeedsResolution).and_then(|x| print_upgits(x, "Needs resolution"));
+    groups.get(&Outcome::WIPOther).and_then(|x| print_upgits(x, "Other error outcome"));
     groups.get(&Outcome::Updated).and_then(|upgits| -> Option<()> {
         println!("Updated ({}):", upgits.len());
         for u in upgits {
-            println!("");
-            println!("{}:", u.path);
-            println!("----------------------");
-            println!("{}", u.report);
-            println!("");
+            println!("{}:{}\n", u.path, u.report);
         };
         None
     });
@@ -638,13 +539,12 @@ async fn main() {
     let shared_data: SharedData = Arc::new(Mutex::new(creds::Storage::blank()));
 
     for rc in repo_containers {
-        let mut counter = 0;
 
         print!("Upgitting {}:", rc);
         io::stdout().flush().unwrap();
         let (tx, rx) = mpsc::channel();
 
-        let (non_repo_upgits, repos) = fs::read_dir(rc).unwrap().fold((Vec::new(), Vec::new()), |(mut upgits, mut repos), fs_entry| {
+        let (mut non_repo_upgits, repos) = fs::read_dir(rc).unwrap().fold((Vec::new(), Vec::new()), |(mut upgits, mut repos), fs_entry| {
             match fs_entry {
                 Ok(repo) => {
                     let repo_path = repo.path().display().to_string();
@@ -668,18 +568,18 @@ async fn main() {
             };
             (upgits, repos)
         });
-        let num_repos = repos.len();
-        let mut children = Vec::new();
+        let mut counter = non_repo_upgits.len();
+
+        let num_repos = counter + repos.len();
 
         for r in repos {
             let tx_clone = mpsc::Sender::clone(&tx);
             let shared_data_clone = Arc::clone(&shared_data);
 
-            let child = tokio::spawn(async move {
+            tokio::spawn(async move {
                 let upgit = run(r, Arc::clone(&shared_data_clone));
                 tx_clone.send(upgit).unwrap();
             });
-            children.push(child);
         }
         drop(tx);
 
@@ -694,8 +594,7 @@ async fn main() {
             }
             upgits.push(upgit);
         };
-        print_results(&non_repo_upgits);
+        upgits.append(&mut non_repo_upgits);
         print_results(&upgits);
     }
 }
-// task spawn
