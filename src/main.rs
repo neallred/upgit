@@ -1,9 +1,6 @@
 use git2::{Repository, Cred};
-use std::str;
 use std::fs;
 use std::env;
-use std::hash::Hash;
-use std::collections::HashMap;
 use std::io;
 use std::io::prelude::*;
 use std::sync::mpsc;
@@ -11,39 +8,13 @@ use std::sync::{Arc, Mutex};
 use std::path::Path;
 use tokio;
 mod creds;
+mod end;
 
 // TODO Should this attempt to update submodules of repos with submodules?
 // Maybe as a configurable option?
 // E.g. [redox](https://gitlab.com/redox-os.org/redox-os/redox)
 
-#[derive(Debug, Hash, PartialEq, Eq, Clone)]
-enum Outcome {
-    // #TODO: Should these be consolidated? Does the user care or want to know
-    // all the different failures and their reasons?
-    NotARepo,
-    NoRemotes,
-    Dirty,
-    RemoteHeadMismatch,
-    UpToDate,
-    Updated,
-    NoClearOrigin,
-    BareRepository,
-    FailedMergeAnalysis,
-    RevertedConflict,
-    UnresolvedConflict,
-    NeedsResolution,
-    FailedFetch,
-    WIPOther // For unconsidered errors. This should eventually eliminated
-}
-
 type SharedData = std::sync::Arc<std::sync::Mutex<creds::Storage>>;
-
-#[derive(Debug, Clone)]
-struct Upgit {
-    path:   String,
-    outcome: Outcome,
-    report: String,
-}
 
 fn do_fetch<'a>(
     repo: &'a git2::Repository,
@@ -67,8 +38,8 @@ fn do_fetch<'a>(
             let pass = shared_data.get_ssh_passphrase();
             Cred::ssh_key(
                 username_from_url.unwrap(),
-                Some(std::path::Path::new(&format!("{}/.ssh/id_rsa.pub", env::var("HOME").unwrap()))),
-                std::path::Path::new(&format!("{}/.ssh/id_rsa", env::var("HOME").unwrap())),
+                Some(Path::new(&format!("{}/.ssh/id_rsa.pub", env::var("HOME").unwrap()))),
+                Path::new(&format!("{}/.ssh/id_rsa", env::var("HOME").unwrap())),
                 if pass == String::from("") { None } else { Some(&pass) },
             )
         } else {
@@ -106,9 +77,9 @@ fn fast_forward(
     lb: &mut git2::Reference,
     rc: &git2::AnnotatedCommit,
     repo_path: String,
-) -> Upgit {
-    let mk_upgit = with_path(repo_path.clone());
-    let mk_upgit_other = with_path_other(repo_path.clone());
+) -> end::End {
+    let mk_end = end::with_path(repo_path.clone());
+    let mk_other_end = end::other(repo_path.clone());
     let remote_tree = repo.find_commit(rc.id()).unwrap().tree().unwrap();
     let local_tree = lb.peel_to_tree().unwrap();
     let mut opts = git2::DiffOptions::new();
@@ -148,12 +119,12 @@ fn fast_forward(
     let msg = format!("Fast-Forward: Setting {} to id: {}", name, rc.id());
 
     if let Err(err) = lb.set_target(rc.id(), &msg) {
-        return mk_upgit_other(
+        return mk_other_end(
             format!("Unable to create a reference with the same name as the given reference\n    {}", err),
         )
     };
     if let Err(err) = repo.set_head(&name) {
-         return mk_upgit_other(format!("Unable to set head:\n    {}", err))
+         return mk_other_end(format!("Unable to set head:\n    {}", err))
     }
     match repo.checkout_head(Some(
         git2::build::CheckoutBuilder::default()
@@ -161,9 +132,9 @@ fn fast_forward(
             // could add logic to handle dirty working directory states
             .force(),
     )) {
-        Ok(()) => mk_upgit(Outcome::Updated, diff_report.join("\n    ")),
-        Err(err) => mk_upgit(
-            Outcome::NeedsResolution,
+        Ok(()) => mk_end(end::Status::Updated, diff_report.join("\n    ")),
+        Err(err) => mk_end(
+            end::Status::NeedsResolution,
             format!("Unable to checkout head. This repo may need manual resolving. Oops.\n    {}", err),
         )
     }
@@ -174,58 +145,58 @@ fn normal_merge(
     local: &git2::AnnotatedCommit,
     remote: &git2::AnnotatedCommit,
     repo_path: String,
-) -> Upgit {
-    let mk_upgit = with_path(repo_path.clone());
-    let mk_upgit_other = with_path_other(repo_path.clone());
+) -> end::End {
+    let mk_end = end::with_path(repo_path.clone());
+    let mk_other_end = end::other(repo_path.clone());
     let local_id = local.id();
     let remote_id = remote.id();
     let local_tree = match repo.find_commit(local_id).and_then(|x| { x.tree() }) {
         Ok(x) => x,
-        Err(err) => return mk_upgit_other(
+        Err(err) => return mk_other_end(
             format!("could not find local commit\n    {}", err),
         ),
     };
     let remote_tree = match repo.find_commit(remote_id).and_then(|x| x.tree()) {
         Ok(x) => x,
-        Err(err) => return mk_upgit_other(
+        Err(err) => return mk_other_end(
             format!("could not find remote commit\n    {}", err),
         ),
     };
 
     let merge_base_commit = match repo.merge_base(local_id, remote_id) {
         Ok(x) => x,
-        Err(err) => return mk_upgit_other(
+        Err(err) => return mk_other_end(
             format!("No merge base local {} and remote {}\n    {}", local_id, remote_id, err),
         ),
     };
     let ancestor = match repo.find_commit(merge_base_commit).and_then(|x| { x.tree() }) {
         Ok(x) => x,
-        Err(err) => return mk_upgit_other(
+        Err(err) => return mk_other_end(
             format!("Unable to get merge_base_commit from a found merge base commit. This should probably never happen??\n    {}", err),
         ),
     };
     let mut idx = match repo.merge_trees(&ancestor, &local_tree, &remote_tree, None) {
         Ok(x) => x,
-        Err(err) => return mk_upgit_other(
+        Err(err) => return mk_other_end(
             format!("Unable to merge trees\n    {}", err),
         )
     };
 
     if idx.has_conflicts() {
         match repo.checkout_index(Some(&mut idx), None) {
-            Ok(()) => return mk_upgit(Outcome::RevertedConflict, format!("")),
-            Err(err) => return mk_upgit(Outcome::UnresolvedConflict, format!("{}", err)),
+            Ok(()) => return mk_end(end::Status::RevertedConflict, format!("")),
+            Err(err) => return mk_end(end::Status::UnresolvedConflict, format!("{}", err)),
         };
     };
     let oid = match idx.write_tree_to(repo) {
         Ok(x) => x,
-        Err(err) => return mk_upgit_other(
+        Err(err) => return mk_other_end(
             format!("Could not write merged tree to repo\n    {}", err),
         )
     };
     let result_tree = match repo.find_tree(oid) {
         Ok(x) => x,
-        Err(err) => return mk_upgit_other(
+        Err(err) => return mk_other_end(
             format!("Unable to find tree for the thing that was just merged. This should not happen\n    {}", err),
         ),
     };
@@ -233,19 +204,19 @@ fn normal_merge(
     let msg = format!("Merge: {} into {}", remote.id(), local.id());
     let sig = match repo.signature() {
         Ok(x) => x,
-        Err(err) => return mk_upgit_other(
+        Err(err) => return mk_other_end(
             format!("Could not find signature\n    {}", err),
         )
     };
     let local_commit = match repo.find_commit(local.id()) {
         Ok(x) => x,
-        Err(err) => return mk_upgit_other(
+        Err(err) => return mk_other_end(
             format!("Could not find local commit\n    {}", err),
         )
     };
     let remote_commit = match repo.find_commit(remote.id()) {
         Ok(x) => x,
-        Err(err) => return mk_upgit_other(
+        Err(err) => return mk_other_end(
             format!("Unable to find remote commit\n    {}", err),
         )
     };
@@ -258,15 +229,15 @@ fn normal_merge(
         &result_tree,
         &[&local_commit, &remote_commit],
     ) {
-        return mk_upgit_other(format!("Unable to make commit\n    {}", err))
+        return mk_other_end(format!("Unable to make commit\n    {}", err))
     };
 
     // Set working tree to match head.
     match repo.checkout_head(None) {
-        Err(err) => mk_upgit_other(
+        Err(err) => mk_other_end(
             format!("Unable to checkout head\n    {}", err),
         ),
-        _ => mk_upgit(Outcome::Updated, format!(""))
+        _ => mk_end(end::Status::Updated, format!(""))
     }
 }
 
@@ -275,13 +246,13 @@ fn do_merge<'a>(
     remote_branch: &str,
     fetch_commit: git2::AnnotatedCommit<'a>,
     repo_path: String
-) -> Upgit {
-    let mk_upgit = with_path(repo_path.clone());
-    let mk_upgit_other = with_path_other(repo_path.clone());
+) -> end::End {
+    let mk_end = end::with_path(repo_path.clone());
+    let mk_other_end = end::other(repo_path.clone());
     // 1. do a merge analysis
     let (analysis, _) = match repo.merge_analysis(&[&fetch_commit]) {
         Ok(x) => x,
-        Err(err) => return mk_upgit(Outcome::FailedMergeAnalysis, format!("{:?}", err)),
+        Err(err) => return mk_end(end::Status::FailedMergeAnalysis, format!("{:?}", err)),
     };
 
     // 2. Do the appropriate merge
@@ -295,13 +266,13 @@ fn do_merge<'a>(
                 // pulling into an empty repository.
                 let set_ref_msg = format!("Setting {} to {}", remote_branch, fetch_commit.id());
                 if let Err(err) = repo.reference(&refname, fetch_commit.id(), true, &set_ref_msg) {
-                    return mk_upgit_other(
+                    return mk_other_end(
                         format!("Can't create ref \"{}\". Does it already exist?\n    {}", refname, err)
                     )
                 };
 
                 if let Err(err) = repo.set_head(&refname) {
-                    return mk_upgit_other(format!("Unable to set head\n    {}", err))
+                    return mk_other_end(format!("Unable to set head\n    {}", err))
                 };
                 return match repo.checkout_head(Some(
                         git2::build::CheckoutBuilder::default()
@@ -309,8 +280,8 @@ fn do_merge<'a>(
                             .conflict_style_merge(true)
                             .force(),
                 )) {
-                    Err(err) => mk_upgit_other(format!("Unable to set head\n    {}", err)),
-                    Ok(_) => mk_upgit(Outcome::Updated, format!("")),
+                    Err(err) => mk_other_end(format!("Unable to set head\n    {}", err)),
+                    Ok(_) => mk_end(end::Status::Updated, format!("")),
                 };
             }
         }
@@ -318,77 +289,53 @@ fn do_merge<'a>(
         // do a normal merge
         let reference = match repo.head() {
             Ok(x) => x,
-            Err(err) => return mk_upgit_other(
+            Err(err) => return mk_other_end(
                 format!("Unable to retrieve reference pointed to by HEAD\n    {}", err),
             )
         };
         let head_commit = match repo.reference_to_annotated_commit(&reference) {
             Ok(x) => x,
-            Err(err) => return mk_upgit_other(format!("unable to resolve reference\n    {}", err)),
+            Err(err) => return mk_other_end(format!("unable to resolve reference\n    {}", err)),
         };
         return normal_merge(&repo, &head_commit, &fetch_commit, repo_path)
     }
 
     return if analysis.is_none() {
-        mk_upgit_other(format!("Merge analysis is none."))
+        mk_other_end(format!("Merge analysis is none."))
     } else if analysis.is_up_to_date() {
-        mk_upgit(Outcome::UpToDate, format!(""))
+        mk_end(end::Status::UpToDate, format!(""))
     } else if analysis.is_unborn() {
-        mk_upgit_other(format!("Unborn merge analysis"))
+        mk_other_end(format!("Unborn merge analysis"))
     } else {
-        mk_upgit_other(format!("unknown status, this should probably not happen"))
+        mk_other_end(format!("unknown status, this should probably not happen"))
     }
 }
 
-fn with_path(path: String) -> Box<dyn Fn(Outcome, String) -> Upgit> {
-    return Box::new(move |outcome: Outcome, report: String| Upgit {
-        path: path.clone(),
-        outcome,
-        report
-    })
-}
-
-fn with_path_other(path: String) -> Box<dyn Fn(String) -> Upgit> {
-    return Box::new(move |report: String| Upgit {
-        path: path.clone(),
-        outcome: Outcome::WIPOther,
-        report
-    })
-}
-
-fn with_path_no_report(path: String) -> Box<dyn Fn(Outcome) -> Upgit> {
-    return Box::new(move |outcome: Outcome| Upgit {
-        path: path.clone(),
-        outcome,
-        report: String::from(""),
-    })
-}
-
-fn get_origin_remote(repo: &Repository, repo_path: String) -> Result<git2::Remote, Upgit> {
+fn get_origin_remote(repo: &Repository, repo_path: String) -> Result<git2::Remote, end::End> {
     repo.find_remote("origin").or_else(|find_remote_err| {
-        let mk_upgit_no_report = with_path_no_report(repo_path.clone());
-        let mk_upgit_other = with_path_other(repo_path.clone());
+        let mk_end_no_report = end::sans_report(repo_path.clone());
+        let mk_other_end = end::other(repo_path.clone());
         let remotes = match repo.remotes() {
             Ok(r) => r,
-            Err(_) => return Err(mk_upgit_no_report(Outcome::NoRemotes)),
+            Err(_) => return Err(mk_end_no_report(end::Status::NoRemotes)),
         };
 
         return if remotes.len() == 1 {
             match remotes.get(0) {
                 Some(remote) => {
                     match repo.find_remote(remote) {
-                        Err(err) => Err(mk_upgit_other(
+                        Err(err) => Err(mk_other_end(
                             format!("Err using non origin remote {}\n    {:?}", remote, err)
                         )),
                         Ok(x) => Ok(x),
                     }
                 },
-                None => Err(mk_upgit_other(format!("{}", find_remote_err))),
+                None => Err(mk_other_end(format!("{}", find_remote_err))),
             }
         } else if remotes.len() > 1 {
-            Err(mk_upgit_no_report(Outcome::NoClearOrigin))
+            Err(mk_end_no_report(end::Status::NoClearOrigin))
         } else {
-            Err(mk_upgit_no_report(Outcome::NoRemotes))
+            Err(mk_end_no_report(end::Status::NoRemotes))
         }
     })
 }
@@ -438,98 +385,38 @@ fn check_repo_dirty(repo: &Repository) -> Option<Vec<String>> {
     }
 }
 
-fn run(repo_path: String, shared_data: SharedData) -> Upgit {
-    let mk_upgit = with_path(repo_path.clone());
-    let mk_upgit_other = with_path_other(repo_path.clone());
+fn run(repo_path: String, shared_data: SharedData) -> end::End {
+    let mk_end = end::with_path(repo_path.clone());
+    let mk_other_end = end::other(repo_path.clone());
 
     let repo = match Repository::open(&repo_path) {
         Ok(r) => r,
-        Err(_) => return mk_upgit(Outcome::NotARepo, format!("")),
+        Err(_) => return end::non_repo(repo_path, format!("")),
     };
     let remote_branch = match repo.head() {
         Ok(the_head) => {
             match the_head.shorthand() {
                 Some(x) => String::from(x),
-                None => return mk_upgit_other(format!("Can't get local head name")),
+                None => return mk_other_end(format!("Can't get local head name")),
             }
         },
-        Err(err) => return mk_upgit_other(format!("Can't get local head name, {}", err)),
+        Err(err) => return mk_other_end(format!("Can't get local head name, {}", err)),
     };
     let mut remote = match get_origin_remote(&repo, repo_path.clone()) {
         Ok(r) => r,
-        Err(upgit) => return upgit,
+        Err(end) => return end,
     };
 
     if let Some(statuses) = check_repo_dirty(&repo) {
-         return mk_upgit(Outcome::Dirty, statuses.join("\n    "))
+         return mk_end(end::Status::Dirty, statuses.join("\n    "))
     };
 
     // Up to here, no network calls are made
     let fetch_commit = match do_fetch(&repo, &[&remote_branch], &mut remote, &remote_branch, shared_data) {
         Ok(x) => x,
-        Err(err) => return mk_upgit(Outcome::FailedFetch, format!("{:?}", err)),
+        Err(err) => return mk_end(end::Status::FailedFetch, format!("{:?}", err)),
     };
     return do_merge(&repo, &remote_branch, fetch_commit, repo_path)
-}
-
-fn group_upgits(upgits: Vec<Upgit>) -> HashMap<Outcome, Vec<Upgit>> {
-    let mut grouped: HashMap<Outcome, Vec<Upgit>> = HashMap::new();
-    upgits.into_iter().fold(&mut grouped, move |acc, u| {
-        match acc.get_mut(&u.outcome) {
-            Some(mutable_group) => {
-                mutable_group.push(u);
-            },
-            None => {
-                let _ = acc.insert(u.outcome.clone(), vec![u]);
-            },
-        };
-        acc
-    });
-    grouped
-}
-
-fn print_upgits(upgits: &Vec<Upgit>, label: &str) -> Option<()> {
-        println!("{} ({}):", label, upgits.len());
-        for u in upgits {
-            println!("  {}\n    {}", u.path, u.report);
-        };
-        None
-}
-fn report_path(upgits: &Vec<Upgit>, label: &str) -> Option<()> {
-        println!("{} ({}):", label, upgits.len());
-        for u in upgits {
-            println!("  {}", u.path);
-        };
-        None
-}
-fn report_count(upgits: &Vec<Upgit>, label: &str) -> Option<()> {
-        println!("{} ({})", label, upgits.len());
-        None
-}
-
-fn print_results(upgits: &Vec<Upgit>) {
-    println!("");
-    let groups = group_upgits(upgits.clone());
-    groups.get(&Outcome::NotARepo).and_then(|x| report_path(x, "Not a repo"));
-    groups.get(&Outcome::NoRemotes).and_then(|x| report_path(x, "No remote"));
-    groups.get(&Outcome::NoClearOrigin).and_then(|x| print_upgits(x, "No clear remote origin"));
-    groups.get(&Outcome::BareRepository).and_then(|x| report_count(x, "Bare repo, skipped"));
-    groups.get(&Outcome::RemoteHeadMismatch).and_then(|x| report_path(x, "Remote head mismatch"));
-    groups.get(&Outcome::UpToDate).and_then(|x| report_count(x, "Up to date"));
-    groups.get(&Outcome::FailedMergeAnalysis).and_then(|x| report_count(x, "Failed merge analysis"));
-    groups.get(&Outcome::RevertedConflict).and_then(|x| print_upgits(x, "Reverted conflict"));
-    groups.get(&Outcome::UnresolvedConflict).and_then(|x| print_upgits(x, "Unresolved conflict"));
-    groups.get(&Outcome::Dirty).and_then(|x| print_upgits(x, "Dirty, skipped"));
-    groups.get(&Outcome::FailedFetch).and_then(|x| print_upgits(x, "Couldn't fetch"));
-    groups.get(&Outcome::NeedsResolution).and_then(|x| print_upgits(x, "Needs resolution"));
-    groups.get(&Outcome::WIPOther).and_then(|x| print_upgits(x, "Other error outcome"));
-    groups.get(&Outcome::Updated).and_then(|upgits| -> Option<()> {
-        println!("Updated ({}):", upgits.len());
-        for u in upgits {
-            println!("{}:{}\n", u.path, u.report);
-        };
-        None
-    });
 }
 
 #[tokio::main]
@@ -545,31 +432,26 @@ async fn main() {
         io::stdout().flush().unwrap();
         let (tx, rx) = mpsc::channel();
 
-        let (mut non_repo_upgits, repos) = fs::read_dir(rc).unwrap().fold((Vec::new(), Vec::new()), |(mut upgits, mut repos), fs_entry| {
+        let (mut non_repo_ends, repos) = fs::read_dir(rc).unwrap().fold((Vec::new(), Vec::new()), |(mut ends, mut repos), fs_entry| {
             match fs_entry {
                 Ok(repo) => {
                     let repo_path = repo.path().display().to_string();
                     if repo.metadata().unwrap().is_dir() {
                         repos.push(repo_path);
                     } else {
-                        upgits.push(Upgit {
-                            path: repo_path,
-                            outcome: Outcome::NotARepo,
-                            report: String::from(""),
-                        });
+                        ends.push(end::non_repo(repo_path, format!("")));
                     }
                 },
                 Err(err) => {
-                    upgits.push(Upgit {
-                        path: String::from("Unknown fs entity"),
-                        outcome: Outcome::NotARepo,
-                        report: format!("{:?}", err),
-                    });
+                    ends.push(end::non_repo(
+                            String::from("Unknown fs entity"),
+                            format!("{:?}", err)
+                    ));
                 }
             };
-            (upgits, repos)
+            (ends, repos)
         });
-        let mut counter = non_repo_upgits.len();
+        let mut counter = non_repo_ends.len();
 
         let num_repos = counter + repos.len();
 
@@ -578,14 +460,14 @@ async fn main() {
             let shared_data_clone = Arc::clone(&shared_data);
 
             tokio::spawn(async move {
-                let upgit = run(r, Arc::clone(&shared_data_clone));
-                tx_clone.send(upgit).unwrap();
+                let end = run(r, Arc::clone(&shared_data_clone));
+                tx_clone.send(end).unwrap();
             });
         }
         drop(tx);
 
-        let mut upgits = vec![];
-        for upgit in rx {
+        let mut ends = vec![];
+        for end in rx {
             counter += 1;
             // Do not output here if arc structure is being interacted with,
             // as it might mean user is being promted for input.
@@ -593,9 +475,9 @@ async fn main() {
                 print!("\rUpgitting {}: {} of {}", rc, counter, num_repos);
                 io::stdout().flush().unwrap();
             }
-            upgits.push(upgit);
+            ends.push(end);
         };
-        upgits.append(&mut non_repo_upgits);
-        print_results(&upgits);
+        ends.append(&mut non_repo_ends);
+        end::print(&ends);
     }
 }
