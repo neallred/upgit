@@ -508,6 +508,7 @@ fn report_count(upgits: &Vec<Upgit>, label: &str) -> Option<()> {
 }
 
 fn print_results(upgits: &Vec<Upgit>) {
+    println!("");
     let groups = group_upgits(upgits.clone());
     groups.get(&Outcome::NotARepo).and_then(|x| report_path(x, "Not a repo"));
     groups.get(&Outcome::NoRemotes).and_then(|x| report_path(x, "No remote"));
