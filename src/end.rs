@@ -121,3 +121,61 @@ pub fn print(ends: &Vec<End>) {
         None
     });
 }
+
+#[cfg(test)]
+mod tests {
+    fn blnk() -> String {
+        String::from("")
+    }
+    use super::*;
+    #[test]
+    fn group_buckets_correctly() {
+        let mk_end = |status| End {
+            path: String::from(""),
+            status,
+            report: String::from(""),
+        };
+        let ends = vec![
+            mk_end(Status::NonRepo),
+            mk_end(Status::NoRemotes),
+            mk_end(Status::NoRemotes),
+            mk_end(Status::Dirty),
+            mk_end(Status::RemoteHeadMismatch),
+            mk_end(Status::UpToDate),
+            mk_end(Status::Updated),
+            mk_end(Status::NoClearOrigin),
+            mk_end(Status::BareRepository),
+            mk_end(Status::FailedMergeAnalysis),
+            mk_end(Status::RevertedConflict),
+            mk_end(Status::UnresolvedConflict),
+            mk_end(Status::NeedsResolution),
+            mk_end(Status::FailedFetch),
+            mk_end(Status::WIPOther)
+        ];
+        let grouped = group(ends.clone());
+
+        assert_eq!(grouped.len(), ends.len() - 1);
+        assert_eq!(grouped.get(&Status::NoRemotes).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn non_repo_is_self() {
+        assert_eq!(non_repo(blnk(), blnk()).status, Status::NonRepo)
+    }
+
+    #[test]
+    fn other_is_self() {
+        assert_eq!(other(blnk())(blnk()).status, Status::WIPOther)
+    }
+
+    #[test]
+    fn sans_report_is_empty() {
+        assert_eq!(sans_report(blnk())(Status::NonRepo).report, blnk())
+    }
+
+    #[test]
+    fn with_path_has_path() {
+        let my_path = String::from("/path/to/repo");
+        assert_eq!(with_path(my_path.clone())(Status::NonRepo, blnk()).path, my_path)
+    }
+}
