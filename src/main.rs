@@ -1,6 +1,5 @@
-use git2::{Repository, Cred};
+use git2::{Repository};
 use std::fs;
-use std::env;
 use std::io;
 use std::io::prelude::*;
 use std::sync::mpsc;
@@ -9,12 +8,13 @@ use std::path::Path;
 use tokio;
 mod creds;
 mod end;
+mod config;
 
 // TODO Should this attempt to update submodules of repos with submodules?
 // Maybe as a configurable option?
 // E.g. [redox](https://gitlab.com/redox-os.org/redox-os/redox)
 
-type SharedData = std::sync::Arc<std::sync::Mutex<creds::Storage>>;
+type SharedData = Arc<Mutex<creds::Storage>>;
 
 fn do_fetch<'a>(
     repo: &'a git2::Repository,
@@ -26,26 +26,7 @@ fn do_fetch<'a>(
     let mut cb = git2::RemoteCallbacks::new();
 
     let mut fo = git2::FetchOptions::new();
-    cb.credentials(|url, username_from_url, allowed_types| {
-
-        if allowed_types.is_user_pass_plaintext() {
-            let user = username_from_url.unwrap();
-            let mut shared_data = shared_data.lock().unwrap();
-            let pass = shared_data.get_plaintext(user.to_string(), url.to_string());
-            Cred::userpass_plaintext(user, &pass)
-        } else if allowed_types.is_ssh_key() {
-            let mut shared_data = shared_data.lock().unwrap();
-            let pass = shared_data.get_ssh_passphrase();
-            Cred::ssh_key(
-                username_from_url.unwrap(),
-                Some(Path::new(&format!("{}/.ssh/id_rsa.pub", env::var("HOME").unwrap()))),
-                Path::new(&format!("{}/.ssh/id_rsa", env::var("HOME").unwrap())),
-                if pass == String::from("") { None } else { Some(&pass) },
-            )
-        } else {
-            Err(git2::Error::from_str("Unable to select a credential type, only plaintext or ssh key are supported at this time."))
-        }
-    });
+    cb.credentials(|url, username, allowed_types| creds::callback(url, username, allowed_types, Arc::clone(&shared_data)) );
 
     fo.remote_callbacks(cb);
     // Always fetch all tags.
@@ -421,18 +402,18 @@ fn run(repo_path: String, shared_data: SharedData) -> end::End {
 
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = env::args().collect();
-    let repo_containers = &args[1..];
+    let config = config::new();
+    println!("config: {:?}", config);
 
-    let shared_data: SharedData = Arc::new(Mutex::new(creds::Storage::blank()));
+    let shared_data: SharedData = Arc::new(Mutex::new(creds::Storage::from_config(&config)));
 
-    for rc in repo_containers {
+    for gd in config.git_dirs {
 
-        print!("Upgitting {}:", rc);
+        print!("Upgitting {}:", gd);
         io::stdout().flush().unwrap();
         let (tx, rx) = mpsc::channel();
 
-        let (mut non_repo_ends, repos) = fs::read_dir(rc).unwrap().fold((Vec::new(), Vec::new()), |(mut ends, mut repos), fs_entry| {
+        let (mut non_repo_ends, repos) = fs::read_dir(&gd).unwrap().fold((Vec::new(), Vec::new()), |(mut ends, mut repos), fs_entry| {
             match fs_entry {
                 Ok(repo) => {
                     let repo_path = repo.path().display().to_string();
@@ -472,7 +453,7 @@ async fn main() {
             // Do not output here if arc structure is being interacted with,
             // as it might mean user is being promted for input.
             if let Ok(_) = shared_data.try_lock() {
-                print!("\rUpgitting {}: {} of {}", rc, counter, num_repos);
+                print!("\rUpgitting {}: {} of {}", gd, counter, num_repos);
                 io::stdout().flush().unwrap();
             }
             ends.push(end);

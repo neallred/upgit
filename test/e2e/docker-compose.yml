@@ -19,8 +19,6 @@ services:
       dockerfile: ./test-pull.Dockerfile
     image: upgit-test-pull-image
     container_name: upgit-test-pull
-    volumes:
-      - "../common/upgit-linux:/bin/upgit"
     depends_on:
       - git_server
     networks:

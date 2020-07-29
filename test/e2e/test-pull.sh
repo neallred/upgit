@@ -42,6 +42,6 @@ git push
 
 echo Test that upgit updates repo b
 cd $git_space
-upgit ./
+/bin/upgit ./
 
 loop_sleep

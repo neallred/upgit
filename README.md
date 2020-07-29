@@ -1,18 +1,16 @@
 # upgit
 
-Command line tool for bringing git repos up to date, quickly.
-
-Inspired by countless minutes lost repeating `cd <some-repo-path> && git pull` for countless repos. Credit to https://gabac.blog/posts/git-pull-many-repos-at-once/ for the shell script one-liner.
+Command line tool for bringing git repos up to date, quickly. Uses the tokio runtime to pull multiple repos at once. Inspired by countless repetitions of "Do you have latest master?" and `cd <some-repo-path> && git pull`.
 
 ## Prerequisites
 
-A working [`cargo`](https://doc.rust-lang.org/cargo) install. They can both be installed by following the instructions on [rustup.rs](https://rustup.rs).
+A working [`cargo`](https://doc.rust-lang.org/cargo) install. It (and `rustup`) can be installed by following the instructions on [rustup.rs](https://rustup.rs).
 
 ## Usage
 
 ### Authentication
 
-Currently, `upgit` supports basic credential and ssh auth methods. It is work in progress and will likely change significantly. The user is not prompted for auth unless the specific repo requests it.
+Currently, `upgit` supports basic credential and ssh auth methods. It is work in progress and will likely change significantly. The user is not prompted for auth unless the specific repo requests it, or unless they signal they want to preprovide credentials.
 
 The ssh method naively assumes the private key is at $HOME/.ssh/id_rsa. It allows entering a blank ssh passphrase if there is no passphrase on the key. It accepts the password and does not allow different keys to be used per repo.
 
@@ -24,10 +22,10 @@ The plain text method assumes the last password entered is the one that should b
 From the repo root, run
 
 ```
-cargo run <relative path(s) to repo container folder(s)>
+cargo run <relative path(s) to folder holding git project(s)>
 ```
 
-For example, if I stored all my repos in ~/github, `cargo run ~/github`
+For example, if I stored all my repos in `~/github`, `cargo run ~/github`
 
 ## Building
 
@@ -37,13 +35,13 @@ From the repo root, run
 cargo build --release
 ```
 
-Move upgit executable to somewhere on your `$PATH`.
+Move the `target/release/upgit` executable to somewhere on your `$PATH`.
 
 ## Testing
 
 ### Unit
 
-TBD
+Run `cargo test`.
 
 ### Integration
 
