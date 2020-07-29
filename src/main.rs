@@ -409,7 +409,7 @@ async fn main() {
 
     for gd in config.git_dirs {
 
-        print!("Upgitting {}:", gd);
+        print!("\nUpgitting {}:", gd);
         io::stdout().flush().unwrap();
         let (tx, rx) = mpsc::channel();
 

@@ -24,14 +24,14 @@ fn prompt_confirm(prompt: String, required: bool, sensitive: bool) -> String {
     let mut response_confirm = String::from("b");
     while response != response_confirm {
         if sensitive {
-            response = rpassword::read_password_from_tty(Some(&prompt)).unwrap();
+            response = rpassword::read_password_from_tty(Some(&prompt)).expect("Unable to read password from tty");
         } else {
             print!("{}" , prompt);
             io::stdout().flush().unwrap();
             response = read!("{}\n");
         }
         if sensitive {
-            response_confirm = rpassword::read_password_from_tty(Some(&format!("Confirm:"))).unwrap();
+            response_confirm = rpassword::read_password_from_tty(Some(&format!("Confirm:"))).expect("Unable to read password from tty");
         } else {
             print!("Confirm: ");
             io::stdout().flush().unwrap();
@@ -112,6 +112,16 @@ fn prompt_ssh_pass(private_key_path: String) -> String {
     }
 }
 
+fn relative_to_absolute_path(x: &str) -> String {
+    let path_str: String = shellexpand::tilde(x).into_owned();
+    std::fs::canonicalize(&path_str)
+        .or_else(|_| std::fs::read_link(x))
+        .expect(&format!("\"{}\" was not a canonical path or symlink", path_str))
+        .to_str()
+        .expect(&format!("\"{}\"was not a path", path_str))
+        .to_string()
+}
+
 fn get_git_dirs(matches: &ArgMatches) -> Vec<String> {
     let git_dirs_args: Vec<_> = matches.values_of("git-dirs").unwrap_or_default().map(|x| String::from(x)).collect();
     if git_dirs_args.len() > 0 {
@@ -119,82 +129,92 @@ fn get_git_dirs(matches: &ArgMatches) -> Vec<String> {
     }
 
     if let Ok(string) = env::var("UPGIT_GIT_DIRS") {
-        let git_dirs: Vec<_> = string.split(",").map(|x| x.to_string()).collect();
+        let git_dirs: Vec<_> = string.split(",").map(relative_to_absolute_path).collect();
         if git_dirs.len() > 0 {
             return git_dirs;
         }
     }
 
-    println!("Git directories were not provided via $UPGIT_GIT_DIRS, CLI, or config file. Provide space separated list via stdin:");
+    println!("Git directories were not provided via $UPGIT_GIT_DIRS or CLI. Provide space separated list via stdin:");
     let git_dirs_str: String = read!("{}\n");
     if git_dirs_str.len() == 0 {
         println!("No git directories provided, exiting");
         std::process::exit(1);
     }
 
-    let git_dirs: Vec<_> = git_dirs_str.split(" ").map(|x| {
-        let path_str: String = shellexpand::tilde(x).into_owned();
-        std::fs::canonicalize(&path_str)
-            .or_else(|_| std::fs::read_link(x))
-            .expect(&format!("\"{}\" was not a canonical path or symlink", path_str))
-            .to_str()
-            .expect(&format!("\"{}\"was not a path", path_str))
-            .to_string()
-    }).collect();
+    let git_dirs: Vec<_> = git_dirs_str.split(" ").map(relative_to_absolute_path).collect();
 
     git_dirs 
 }
 
 fn get_default_ssh(matches: &ArgMatches) -> Option<String> {
-    if let Some(_) = matches.value_of("default-ssh") {
+    if matches.is_present("default-ssh") || env::var("UPGIT_DEFAULT_SSH").is_ok() {
         let response = prompt_confirm(format!("Enter default ssh key pass (blank for none): "), false, true);
         return match response {
             pwd if pwd == String::from("") => None,
             pwd => Some(pwd),
         };
     };
+
     None
 }
 
 fn get_default_plain(matches: &ArgMatches) -> Option<String> {
-    if matches.is_present("default-plain") {
-        let response = prompt_confirm(format!("Enter default plaintext authentication method pass (blank for none): "), false, true);
-        return match response {
-            pwd if pwd == String::from("") => None,
-            pwd => Some(pwd),
-        };
+    if matches.is_present("default-plain") || env::var("UPGIT_DEFAULT_PLAIN").is_ok() {
+        return Some(prompt_confirm(format!("Enter default plaintext authentication method pass (blank for none): "), true, true));
     };
+
     None
 }
 
 fn get_ssh_keys(matches: &ArgMatches) -> HashMap<String, String> {
-    let ssh_keys: HashMap<String, String> = matches.values_of("ssh").unwrap_or_default().map(|ssh_key_path| {(
-            ssh_key_path.to_string(),
-            prompt_ssh_pass(ssh_key_path.to_string()),
-    )}).collect();
-    return ssh_keys
+    if let Some(key_paths) = matches.values_of("ssh") {
+        return key_paths.map(|path| {(
+            path.to_string(),
+            prompt_ssh_pass(path.to_string()),
+        )}).collect();
+    };
+
+    if let Ok(string) = env::var("UPGIT_SSH") {
+        return string.split(",").map(|path| {(
+            path.to_string(),
+            prompt_ssh_pass(path.to_string()),
+        )}).collect();
+    }
+
+    HashMap::new()
 }
 
 fn get_plaintexts(matches: &ArgMatches) -> HashMap<String, String> {
-    let ssh_keys: HashMap<String, String> = matches.values_of("plain").unwrap_or_default().map(|user_url| {(
+    if let Some(user_urls) = matches.values_of("plain") {
+        return user_urls.map(|user_url| {(
             user_url.to_string(),
             prompt_confirm(format!("enter password for url \"{}\" (required): ", user_url), true, true),
-    )}).collect();
-    return ssh_keys
+        )}).collect();
+    }
+
+    if let Ok(string) = env::var("UPGIT_PLAIN") {
+        return string.split(",").map(|path| {(
+            path.to_string(),
+            prompt_ssh_pass(path.to_string()),
+        )}).collect();
+    }
+
+    HashMap::new()
 }
 
 pub fn new() -> Config {
     let matches = App::new("upgit")
         .version("0.1.0")
         .author("Nathaniel Allred <neallred@gmail.com>")
-        .about("Pulls all repos within a folder containing git projects, in parallel. Supports configuration via command line flags and params. Partial ENV var support. Command line takes precedence. If no option is set but is needed (i.e. repos requiring auth), the program will prompt if a TTY is available, or skip that repo if it is not available.")
+        .about("Pulls all repos within a folder containing git projects, in parallel. Supports configuration via command line flags and params, or via ENV vars. Command line takes precedence. If no option is set but is needed (i.e. repos requiring auth), user will be prompted if a TTY is available, or skip that repo if it is not available.")
         .arg(
             Arg::with_name("plain")
             .long("plain")
             .takes_value(true)
             .multiple(true)
             .number_of_values(1)
-            .long_help("Git repo https url with username. For example, `--plain https://neallred@bitbucket.org/neallred/allredlib-data-backup.git`. For each time this option is passed, user will be prompted for a password.")
+            .long_help("Git repo https url with username. For example, `--plain https://neallred@bitbucket.org/neallred/allredlib-data-backup.git`. For each time this option is passed, user will be prompted for a password. Env var is comma separated UPGIT_PLAIN")
         )
         .arg(
             Arg::with_name("ssh")
@@ -202,24 +222,24 @@ pub fn new() -> Config {
             .takes_value(true)
             .multiple(true)
             .number_of_values(1)
-            .long_help("Paths to ssh keys to preverify. User will be prompted for password for each key given. Can enter \"blank\" if ssh key is not password protected")
+            .long_help("Paths to ssh keys to preverify. User will be prompted for password for each key given. Can enter \"blank\" if ssh key is not password protected. Env var is comma separated UPGIT_SSH")
         )
         .arg(
             Arg::with_name("default-plain")
             .long("default-plain")
-            .long_help("Default password to attempt for https cloned repos. User will be prompted for the password")
+            .long_help("Default password to attempt for https cloned repos. User will be prompted for the password. Env var is UPGIT_DEFAULT_PLAIN set to any value")
             .takes_value(false)
         )
         .arg(
             Arg::with_name("default-ssh")
             .long("default-ssh")
-            .long_help("Default password to use for ssh keys. User will be prompted for the password")
+            .long_help("Default password to use for ssh keys. User will be prompted for the password. Env var is UPGIT_DEFAULT_SSH set to any value")
         )
         .arg(
             Arg::with_name("git-dirs")
             .index(1)
             .multiple(true)
-            .long_help("Paths to folders that contain git repos. Can be relative or absolute. Overrides a (comma separated) UPGIT_GIT_DIRS env var. One or the other must be set.")
+            .long_help("Paths (relative or absolute) to folders that contain git repos. Env var is comma separated UPGIT_GIT_DIRS.")
         )
         .get_matches();
 
