@@ -3,6 +3,7 @@ FROM debian
 RUN apt-get update && apt-get install -y \
       git \
       openssh-client \
+      procps \
       curl
 
 RUN mkdir /root/.ssh/

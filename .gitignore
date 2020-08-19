@@ -10,3 +10,4 @@ git-folder
 /target
 **/*.rs.bk
 tmp
+tmp*

@@ -23,6 +23,8 @@ services:
       - git_server
     networks:
       - upgit
+#    tty: true
+#    stdin_open: true
 
 networks:
   upgit:

@@ -6,9 +6,10 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::path::Path;
 use tokio;
-mod creds;
 mod end;
 mod config;
+mod creds;
+mod string_ops;
 
 // TODO Should this attempt to update submodules of repos with submodules?
 // Maybe as a configurable option?
@@ -22,11 +23,12 @@ fn do_fetch<'a>(
     remote: &'a mut git2::Remote,
     local_branch_name: &str,
     shared_data: SharedData,
+    repo_path: &String,
 ) -> Result<git2::AnnotatedCommit<'a>, git2::Error> {
     let mut cb = git2::RemoteCallbacks::new();
 
     let mut fo = git2::FetchOptions::new();
-    cb.credentials(|url, username, allowed_types| creds::callback(url, username, allowed_types, Arc::clone(&shared_data)) );
+    cb.credentials(|url, username, allowed_types| creds::callback(url, username, allowed_types, Arc::clone(&shared_data), repo_path) );
 
     fo.remote_callbacks(cb);
     // Always fetch all tags.
@@ -61,11 +63,11 @@ fn fast_forward(
 ) -> end::End {
     let mk_end = end::with_path(repo_path.clone());
     let mk_other_end = end::other(repo_path.clone());
-    let remote_tree = repo.find_commit(rc.id()).unwrap().tree().unwrap();
-    let local_tree = lb.peel_to_tree().unwrap();
+    let remote_tree = repo.find_commit(rc.id()).expect("fast forward error").tree().expect("ffw error");
+    let local_tree = lb.peel_to_tree().expect("peel to tree error");
     let mut opts = git2::DiffOptions::new();
     opts.minimal(true);
-    let the_diff = repo.diff_tree_to_tree(Some(&local_tree), Some(&remote_tree), Some(&mut opts)).unwrap();
+    let the_diff = repo.diff_tree_to_tree(Some(&local_tree), Some(&remote_tree), Some(&mut opts)).expect("diff tree error");
     let mut diff_report = vec![String::from("")];
     the_diff.print(
          git2::DiffFormat::NameStatus,
@@ -91,7 +93,7 @@ fn fast_forward(
 
              true
          }
-    ).unwrap();
+    ).expect("diff print error");
 
     let name = match lb.name() {
         Some(s) => s.to_string(),
@@ -393,7 +395,7 @@ fn run(repo_path: String, shared_data: SharedData) -> end::End {
     };
 
     // Up to here, no network calls are made
-    let fetch_commit = match do_fetch(&repo, &[&remote_branch], &mut remote, &remote_branch, shared_data) {
+    let fetch_commit = match do_fetch(&repo, &[&remote_branch], &mut remote, &remote_branch, shared_data, &repo_path) {
         Ok(x) => x,
         Err(err) => return mk_end(end::Status::FailedFetch, format!("{:?}", err)),
     };
@@ -403,35 +405,34 @@ fn run(repo_path: String, shared_data: SharedData) -> end::End {
 #[tokio::main]
 async fn main() {
     let config = config::new();
-    println!("config: {:?}", config);
-
     let shared_data: SharedData = Arc::new(Mutex::new(creds::Storage::from_config(&config)));
 
     for gd in config.git_dirs {
-
         print!("\nUpgitting {}:", gd);
-        io::stdout().flush().unwrap();
+        io::stdout().flush().expect("Could not flush stdout");
         let (tx, rx) = mpsc::channel();
 
-        let (mut non_repo_ends, repos) = fs::read_dir(&gd).unwrap().fold((Vec::new(), Vec::new()), |(mut ends, mut repos), fs_entry| {
-            match fs_entry {
-                Ok(repo) => {
-                    let repo_path = repo.path().display().to_string();
-                    if repo.metadata().unwrap().is_dir() {
-                        repos.push(repo_path);
-                    } else {
-                        ends.push(end::non_repo(repo_path, format!("")));
+        let (mut non_repo_ends, repos) = fs::read_dir(&gd)
+            .expect(format!("could not read dir {}", &gd).as_str())
+            .fold((Vec::new(), Vec::new()), |(mut ends, mut repos), fs_entry| {
+                match fs_entry {
+                    Ok(repo) => {
+                        let repo_path = repo.path().display().to_string();
+                        if repo.metadata().expect(format!("could not get repo metadata for {}", repo_path).as_str()).is_dir() {
+                            repos.push(repo_path);
+                        } else {
+                            ends.push(end::non_repo(repo_path, format!("")));
+                        }
+                    },
+                    Err(err) => {
+                        ends.push(end::non_repo(
+                                String::from("Unknown fs entity"),
+                                format!("{:?}", err)
+                        ));
                     }
-                },
-                Err(err) => {
-                    ends.push(end::non_repo(
-                            String::from("Unknown fs entity"),
-                            format!("{:?}", err)
-                    ));
-                }
-            };
-            (ends, repos)
-        });
+                };
+                (ends, repos)
+            });
         let mut counter = non_repo_ends.len();
 
         let num_repos = counter + repos.len();
@@ -442,7 +443,7 @@ async fn main() {
 
             tokio::spawn(async move {
                 let end = run(r, Arc::clone(&shared_data_clone));
-                tx_clone.send(end).unwrap();
+                tx_clone.send(end).expect("expected to be able to send value");
             });
         }
         drop(tx);
@@ -454,7 +455,7 @@ async fn main() {
             // as it might mean user is being promted for input.
             if let Ok(_) = shared_data.try_lock() {
                 print!("\rUpgitting {}: {} of {}", gd, counter, num_repos);
-                io::stdout().flush().unwrap();
+                io::stdout().flush().expect("Could not flush stdout");
             }
             ends.push(end);
         };

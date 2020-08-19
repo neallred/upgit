@@ -9,14 +9,16 @@ use rpassword;
 use std::process::Command;
 use std::fs::File;
 use std::os::unix::fs::PermissionsExt;
+use crate::string_ops;
 
 #[derive(Debug)]
 pub struct Config {
-    pub ssh: HashMap<String, String>,
+    pub ssh: HashMap<String, String>, // path, pass
     pub plain: HashMap<String, String>,
     pub default_plain: Option<String>,
-    pub default_ssh: Option<String>,
+    pub default_ssh: (String, Option<String>),
     pub git_dirs: Vec<String>,
+    pub share: Share,
 }
 
 fn prompt_confirm(prompt: String, required: bool, sensitive: bool) -> String {
@@ -27,14 +29,20 @@ fn prompt_confirm(prompt: String, required: bool, sensitive: bool) -> String {
             response = rpassword::read_password_from_tty(Some(&prompt)).expect("Unable to read password from tty");
         } else {
             print!("{}" , prompt);
-            io::stdout().flush().unwrap();
+            match io::stdout().flush() {
+                Ok(_) => {},
+                _ => {}
+            };
             response = read!("{}\n");
         }
         if sensitive {
             response_confirm = rpassword::read_password_from_tty(Some(&format!("Confirm:"))).expect("Unable to read password from tty");
         } else {
             print!("Confirm: ");
-            io::stdout().flush().unwrap();
+            match io::stdout().flush() {
+                Ok(_) => {},
+                _ => {}
+            };
             response_confirm = read!("{}\n");
         }
     };
@@ -49,6 +57,15 @@ enum SshVerify {
     Dunno,
     Good,
     Bad,
+}
+
+#[derive(Debug, Clone, PartialEq,  Eq, PartialOrd, Ord)]
+pub enum Share {
+    Never,
+    Defaults,
+    Duplicate,
+    Org,
+    Domain,
 }
 
 fn verify_ssh_pass(private_key_path: &String, passphrase: &String) -> SshVerify {
@@ -95,13 +112,21 @@ fn verify_ssh_pass(private_key_path: &String, passphrase: &String) -> SshVerify 
     SshVerify::Good
 }
 
-fn prompt_ssh_pass(private_key_path: String) -> String {
-    let response = rpassword::read_password_from_tty(Some(&format!("Enter password for ssh key {} (blank for none): ", private_key_path))).unwrap();
+pub fn prompt_ssh_pass(private_key_path: &String) -> String {
+    let response = match rpassword::read_password_from_tty(Some(&format!("Enter password for ssh key {} (blank for none): ", private_key_path))) {
+        Ok(x) => x,
+        // If there is no tty, for example in e2e tests,
+        // we should at least allow a potentially valid no password scenario
+        _ => String::from(""),
+    };
     match verify_ssh_pass(&private_key_path, &response) {
         SshVerify::Good => return response,
         SshVerify::Dunno => {
             print!("Confirm: ");
-            io::stdout().flush().unwrap();
+            match io::stdout().flush() {
+                Ok(_) => {},
+                _ => {}
+            };
             let response_confirm: String = read!("{}\n");
             if response == response_confirm {
                 return response
@@ -147,16 +172,27 @@ fn get_git_dirs(matches: &ArgMatches) -> Vec<String> {
     git_dirs 
 }
 
-fn get_default_ssh(matches: &ArgMatches) -> Option<String> {
-    if matches.is_present("default-ssh") || env::var("UPGIT_DEFAULT_SSH").is_ok() {
-        let response = prompt_confirm(format!("Enter default ssh key pass (blank for none): "), false, true);
-        return match response {
-            pwd if pwd == String::from("") => None,
-            pwd => Some(pwd),
-        };
+fn get_default_ssh(matches: &ArgMatches) -> (String, Option<String>) {
+    let key_path = match matches.value_of("default-ssh") {
+        Some(path) => {
+            if path == String::from("") {
+                format!("{}/.ssh/id_rsa", env::var("HOME").expect("Unable to find HOME env var"))
+            } else {
+                path.to_string()
+            }
+        },
+        None => format!(""),
     };
 
-    None
+    let key_pass = if matches.is_present("default-ssh") || env::var("UPGIT_DEFAULT_SSH").is_ok() {
+
+        let response = prompt_confirm(format!("Enter default ssh key pass (blank for none): "), false, true);
+        string_ops::str_to_opt(response)
+    } else {
+        None
+    };
+
+    (key_path, key_pass)
 }
 
 fn get_default_plain(matches: &ArgMatches) -> Option<String> {
@@ -167,18 +203,39 @@ fn get_default_plain(matches: &ArgMatches) -> Option<String> {
     None
 }
 
+fn str_to_share(x: &str) -> Share {
+    if x == "none" { Share::Never }
+    else if x == "default" { Share::Defaults }
+    else if x == "duplicate" { Share::Duplicate }
+    else if x == "org" { Share::Org }
+    else if x == "domain" { Share::Domain }
+    else { Share::Defaults }
+}
+
+fn get_share(matches: &ArgMatches) -> Share {
+    if let Some(share_str) = matches.value_of("share") {
+        return str_to_share(&share_str);
+    }
+
+    if let Ok(share_str) = env::var("UPGIT_SHARE") {
+        return str_to_share(&share_str);
+    }
+
+    Share::Defaults
+}
+
 fn get_ssh_keys(matches: &ArgMatches) -> HashMap<String, String> {
     if let Some(key_paths) = matches.values_of("ssh") {
         return key_paths.map(|path| {(
             path.to_string(),
-            prompt_ssh_pass(path.to_string()),
+            prompt_ssh_pass(&path.to_string()),
         )}).collect();
     };
 
     if let Ok(string) = env::var("UPGIT_SSH") {
         return string.split(",").map(|path| {(
             path.to_string(),
-            prompt_ssh_pass(path.to_string()),
+            prompt_ssh_pass(&path.to_string()),
         )}).collect();
     }
 
@@ -196,7 +253,7 @@ fn get_plaintexts(matches: &ArgMatches) -> HashMap<String, String> {
     if let Ok(string) = env::var("UPGIT_PLAIN") {
         return string.split(",").map(|path| {(
             path.to_string(),
-            prompt_ssh_pass(path.to_string()),
+            prompt_confirm(format!("enter password for url \"{}\" (required): ", path.to_string()),true, true),
         )}).collect();
     }
 
@@ -207,14 +264,15 @@ pub fn new() -> Config {
     let matches = App::new("upgit")
         .version("0.1.0")
         .author("Nathaniel Allred <neallred@gmail.com>")
-        .about("Pulls all repos within a folder containing git projects, in parallel. Supports configuration via command line flags and params, or via ENV vars. Command line takes precedence. If no option is set but is needed (i.e. repos requiring auth), user will be prompted if a TTY is available, or skip that repo if it is not available.")
+        .about("Updates repos in a folder containing git projects, in parallel. Supports configuration via command line flags and params, and via ENV vars. Command line takes precedence. If no option is set but is needed (i.e. repos requiring auth), user will be prompted if a TTY is available, otherwise the process will exit unsuccessfully.")
+        .set_term_width(80)
         .arg(
             Arg::with_name("plain")
             .long("plain")
             .takes_value(true)
             .multiple(true)
             .number_of_values(1)
-            .long_help("Git repo https url with username. For example, `--plain https://neallred@bitbucket.org/neallred/allredlib-data-backup.git`. For each time this option is passed, user will be prompted for a password. Env var is comma separated UPGIT_PLAIN")
+            .long_help("Git repo https url with username. For example, `--plain https://neallred@bitbucket.org/neallred/allredlib-data-backup.git`. For each time this option is passed, user will be prompted for a password. Env var is comma separated UPGIT_PLAIN.")
         )
         .arg(
             Arg::with_name("ssh")
@@ -222,18 +280,26 @@ pub fn new() -> Config {
             .takes_value(true)
             .multiple(true)
             .number_of_values(1)
-            .long_help("Paths to ssh keys to preverify. User will be prompted for password for each key given. Can enter \"blank\" if ssh key is not password protected. Env var is comma separated UPGIT_SSH")
+            .long_help("Paths to ssh keys to preverify. User will be prompted for password for each key given. Can enter empty password if key has no password. Env var is comma separated UPGIT_SSH.")
         )
         .arg(
             Arg::with_name("default-plain")
             .long("default-plain")
-            .long_help("Default password to attempt for https cloned repos. User will be prompted for the password. Env var is UPGIT_DEFAULT_PLAIN set to any value")
+            .long_help("Default password to attempt for http(s) cloned repos. User will be prompted for the password. Env var is UPGIT_DEFAULT_PLAIN set to any value, including empty.")
             .takes_value(false)
         )
         .arg(
             Arg::with_name("default-ssh")
             .long("default-ssh")
-            .long_help("Default password to use for ssh keys. User will be prompted for the password. Env var is UPGIT_DEFAULT_SSH set to any value")
+            .long_help("Default password to use for ssh keys. User will be prompted for the password. Env var is UPGIT_DEFAULT_SSH set to path of key (or empty, in which case $HOME/.ssh/id_rsa is assumed).")
+        )
+        .arg(
+            Arg::with_name("share")
+            .long("share")
+            .takes_value(true)
+            .possible_values(&["none", "default", "duplicate", "org", "domain"])
+            .default_value("default")
+            .long_help("Degree to which credentials may reused between repos needing auth. Each level is additive. `none` means no credential reuse between repos, and defaults are ignored. `default` means default provided credentials may be reused. `duplicate` means defaults, plus multiple copies of a repo can reuse each other's credential. `org` means duplicate, plus upgit will infer a matching org by looking at the second to last url path segment (e.g. `neallred` in https://github.com/neallred/upgit`). `domain` means reusing when user and url domain match. Env var is UPGIT_SHARE.")
         )
         .arg(
             Arg::with_name("git-dirs")
@@ -249,6 +315,7 @@ pub fn new() -> Config {
         default_ssh: get_default_ssh(&matches),
         default_plain: get_default_plain(&matches),
         git_dirs: get_git_dirs(&matches),
+        share: get_share(&matches),
     };
 
     config

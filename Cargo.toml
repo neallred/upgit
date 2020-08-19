@@ -8,8 +8,9 @@ edition = "2018"
 
 [dependencies]
 git2 = "0.13.6"
-rpassword = "4.0"
+rpassword = "5.0"
 tokio = { version = "0.2", features = ["full"] }
 clap = "2.33.1"
 text_io = "0.1.8"
 shellexpand = "2.0.0"
+url = "2.1.1"
