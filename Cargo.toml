@@ -14,3 +14,4 @@ clap = "2.33.1"
 text_io = "0.1.8"
 shellexpand = "2.0.0"
 url = "2.1.1"
+openssl = { version = "0.10.30", features = ["vendored"] }

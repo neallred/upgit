@@ -2,10 +2,6 @@
 
 Command line tool for bringing git repos up to date, quickly. Uses the tokio runtime to pull multiple repos at once. Inspired by countless repetitions of "Do you have latest master?" and `cd <some-repo-path> && git pull`.
 
-## Prerequisites
-
-A working [`cargo`](https://doc.rust-lang.org/cargo) install. It (and `rustup`) can be installed by following the instructions on [rustup.rs](https://rustup.rs).
-
 ## Usage
 
 Run `upgit --help` for the following usage help.
@@ -65,7 +61,7 @@ ARGS:
             var is comma separated UPGIT_GIT_DIRS.
 ```
 
-Examples
+### Examples
 
 Update all the repos contained in the `github` folder, and all the repos contained in the `bitbucket` folder:
 
@@ -99,10 +95,25 @@ Ssh supports multiple keys. If none is provided, and a repo requests ssh authent
 
 The plain text method assumes the last password entered is the one that should be used for unseen URLs. Because of how threading is currently implemented, entering a wrong password means a LOT of password re-entry. To mitigate this, plain text password entry prompts for password confirmation.
 
+## Local developement / building
+
+### Prerequisites
+
+A working [`cargo`](https://doc.rust-lang.org/cargo) install. It (and `rustup`) can be installed by following the instructions on [rustup.rs](https://rustup.rs).
+
+### Install
+
+To build and install locally, from the repo root, run 
+
+```
+cargo build --release
+```
+
+Move the `target/release/upgit` executable to a folder in your `$PATH`.
 
 ## Running
 
-From the repo root, run
+To build and run, from the repo root, run
 
 ```
 cargo run <relative path(s) to folder holding git project(s)>
@@ -110,49 +121,17 @@ cargo run <relative path(s) to folder holding git project(s)>
 
 For example, if I stored all my repos in `~/github`, `cargo run ~/github`
 
-## Building
+### Cross compiling
 
-From the repo root, run
+Currently, cross compiling from (Debian) Linux to MacOS 10.7 and higher is supported. This is done via [`osxcross`](https://github.com/tpoechtrager/osxcross), which is included as a git submodule. `osxcross` has a number of system dependencies. On Debian, you can run `./ensure-cross-compile-setup-linux.bash && ./compile-mac-on-linux.bash`. The build output is created at `target/x86_64-apple-darwin/release/upgit`.
 
-```
-cargo build --release
-```
+### Tests
 
-Move the `target/release/upgit` executable to somewhere on your `$PATH`.
+Run unit tests with `cargo test`.
 
-## Testing
+Run integration tests with `./integration.bash`. Automated assertions are still TODO, but you can manually check if STDOUT matches expectations.
 
-### Unit
-
-Run `cargo test`.
-
-### Integration
-
-From the repo root, run
-
-```
-cargo build
-./test/common/make-git-folder.sh --recreate
-./target/debug/upgit ./test/common/git-folder
-```
-
-`make-git-folder.sh` creates several repos as test/common/git-folder. It accepts a `--recreate` option that will remove the skeleton directory completely and start it over from scratch. Some of the repos created depend on network access.
-
-Automated assertions are still TODO, but you can manually check if STDOUT matches expectations.
-
-### End to end
-From the repo root, run
-
-```
-cargo build
-cp target/debug/upgit test/e2e/upgit-linux
-docker build -t upgit-test-pull-image -f ./test/e2e/test-pull.Dockerfile ./test/e2e
-docker build -t upgit-git-server -f ./test/e2e/git-server.Dockerfile ./test/e2e
-cd test/e2e
-docker-compose up --build --force-recreate
-```
-
-The end to end tests use docker-compose to build a common, reused git server, and various git clients. Each git client is an end to end test. Current tests are :
+Run end-to-end (e2e) tests with `./e2e.bash`. Depends on docker and docker-compose. The tests build a common, reused git server, and various git clients. Each git client is an end to end test. Current tests are:
 
 1. Pulling and reporting updates to one repo. The test script:
   * makes a repo
@@ -160,4 +139,3 @@ The end to end tests use docker-compose to build a common, reused git server, an
   * clones it to another folder
   * updates the original repo and the git server origin repo
   * runs upgit, checking that the clone is updated
-
