@@ -1,8 +1,63 @@
 # upgit
 
-Command line tool for bringing git repos up to date, quickly. Uses the tokio runtime to pull multiple repos at once. Inspired by countless repetitions of "Do you have latest master?" and `cd <some-repo-path> && git pull`.
+Command line tool for updating git repos quickly. Download the latest version for [Linux](https://github.com/neallred/upgit/releases/download/0.1.1/upgit-linux) or [Mac](https://github.com/neallred/upgit/releases/download/0.1.1/upgit-mac).
+
+## Motivation
+When you have lots of repos cloned, they tend to get out of date. Stale repos mean stale code searches and increased merge conflicts when developing on a shared branch (or branching off a stale one).
+
+A quick to implement solution is a bash script that lists your git projects folder and loop through them, running `git pull`. That works, but has some issues:
+
+  1. Given the [embarassingly parallel](https://en.wikipedia.org/wiki/Embarassingly_parallel) nature of updating many repos, going one at a time is slow. You could use [GNU parallel](http://www.gnu.org/software/parallel), but that hampers portability.
+  1. The script may have hard-coded assumptions about directory structure or location, limiting reuse and sharing.
+  1. The script may require a lot of password entry.
+  1. Does the script guard against files and folders that are not git repos?
+  1. What should be done if the repo is dirty? You might cause merge conflicts you would rather have avoided.
+  1. Scrolling back through hundreds of lines of output to see what happened is time consuming and error prone.
+
+`upgit` solves these by:
+
+  1. updating repos in parallel if possible.
+  1. allowing flexible patterns of git folders, and shortening command line typing with env vars.
+  1. allowing flexible patterns of password reuse to fit your workflow.
+  1. checking whether a folder is a git repo.
+  1. leaving dirty repos alone, and aborting merge conflicts.
+  1. presenting a consise summary of what happened to each repo, grouped by outcome.
 
 ## Usage
+
+### Examples
+
+Update all the repos contained in the `github` folder, and all the repos contained in the `bitbucket` folder:
+
+```
+upgit ~/github ~/bitbucket
+```
+
+Supposing you work for a company in which you are part of multiple teams, and you organize your repos according to the teams you are on, you can update them all like this:
+
+```
+upgit ~/megacorp/team-a ~/megacorp/team-b
+```
+
+Update all repos in the `github` folder, being prompted immediately for the password to an assumed ssh key in `$HOME/.ssh/id_rsa`:
+
+```
+upgit --default-ssh ~/github
+```
+
+Or, use a different key than `$HOME/.ssh/id_rsa`:
+
+```
+upgit --default-ssh $HOME/.ssh/my_other_key ~/github
+```
+
+A way of only entering a password once per domain when all your orgs/repos passwords for a given user are the same:
+
+```
+upgit --share domain --plain https://neallred@bitbucket.org/ --plain https://neallred@github.com/ ~/github
+```
+
+### Help
 
 Run `upgit --help` for the following usage help.
 
@@ -59,32 +114,6 @@ ARGS:
     <git-dirs>...
             Paths (relative or absolute) to folders that contain git repos. Env
             var is comma separated UPGIT_GIT_DIRS.
-```
-
-### Examples
-
-Update all the repos contained in the `github` folder, and all the repos contained in the `bitbucket` folder:
-
-```
-upgit ~/github ~/bitbucket
-```
-
-Supposing you work for a company in which you are part of multiple teams, and you organize your repos according to the teams you are on, you can update them all like this:
-
-```
-upgit ~/megacorp/team-a ~/megacorp/team-b
-```
-
-Update all repos in the `github` folder, being prompted immediately for the password to an assumed ssh key in `$HOME/.ssh/id_rsa`:
-
-```
-upgit --default-ssh ~/github
-```
-
-A way of only entering a password once per domain when all your orgs/repos passwords for a given user are the same:
-
-```
-upgit --share domain --plain https://neallred@bitbucket.org/ --plain https://neallred@github.com/ ~/github
 ```
 
 ### Authentication
